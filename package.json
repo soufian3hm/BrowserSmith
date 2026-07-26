@@ -1,0 +1,18 @@
+{
+  "name": "notioned",
+  "version": "0.1.0",
+  "description": "Two-tab Notion AI agent loop that writes real files",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "mcp": "node src/mcp/server.js",
+    "test": "node --test test/protocol.test.js"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  }
+}

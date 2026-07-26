@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>notioned</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand">notioned</span>
+      <button id="btn-run" class="primary">Run</button>
+      <button id="btn-stop" disabled>Stop</button>
+      <button id="btn-autopilot" title="Type once in the left Notion chat; the system finishes on its own">Autopilot</button>
+      <span class="sep"></span>
+      <button id="btn-seed">Seed roles</button>
+      <button id="btn-selftest">Self-test</button>
+      <button id="btn-probe">Probe</button>
+      <details class="menu">
+        <summary>Pick…</summary>
+        <div>
+          <button data-pick="a-composer">A composer</button>
+          <button data-pick="a-send">A send</button>
+          <button data-pick="a-model">A model</button>
+          <button data-pick="a-output">A output</button>
+          <hr />
+          <button data-pick="b-composer">B composer</button>
+          <button data-pick="b-send">B send</button>
+          <button data-pick="b-model">B model</button>
+          <button data-pick="b-output">B output</button>
+        </div>
+      </details>
+      <span class="sep"></span>
+      <span id="login" class="pill out">checking session…</span>
+      <button id="btn-logout" title="Wipe the saved Notion session">Forget login</button>
+      <span id="status">idle</span>
+    </header>
+
+    <main>
+      <section class="tabs">
+        <div class="tab">
+          <div class="tab-label">
+            <span>TAB A — planner (path + verdict)</span>
+            <select id="model-a" title="Model for tab A"><option value="">model…</option></select>
+            <button class="mini" data-models="a">⟳</button>
+          </div>
+          <webview id="tab-a" src="https://app.notion.com/ai" allowpopups></webview>
+        </div>
+        <div class="tab">
+          <div class="tab-label">
+            <span>TAB B — builder (file contents)</span>
+            <select id="model-b" title="Model for tab B"><option value="">model…</option></select>
+            <button class="mini" data-models="b">⟳</button>
+          </div>
+          <webview id="tab-b" src="https://app.notion.com/ai" allowpopups></webview>
+        </div>
+      </section>
+
+      <aside>
+        <label class="row">
+          <span>Project</span>
+          <input id="project" placeholder="my-cool-tool" />
+        </label>
+        <textarea id="prompt" placeholder="What should the agents build?
+e.g. a TypeScript debounce utility with tests"></textarea>
+        <label class="row">
+          <span>Max retries</span><input id="retries" type="number" value="2" min="0" max="5" />
+          <span>Max files</span><input id="maxfiles" type="number" value="6" min="1" max="30" />
+        </label>
+        <div class="log" id="log"></div>
+        <div class="files"><b>workspace/</b><ul id="files"></ul></div>
+      </aside>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
