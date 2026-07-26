@@ -22,14 +22,14 @@ const { ipcRenderer } = require('electron');
 
 const state = {
   composerSelector: null, // user-picked override
-  outputSelector: null,   // user-picked override
-  sendSelector: null,     // user-picked override
-  stopSelector: null,     // user-picked override for the stop/abort control
-  modelSelector: null,    // user-picked override for the model dropdown trigger
-  newchatSelector: null,  // user-picked override for the new-chat control
-  picking: null,          // one of HOOKS, or null
-  before: '',             // transcript snapshot taken by prepare()
-  beforeMessages: 0,      // message count at that snapshot
+  outputSelector: null, // user-picked override
+  sendSelector: null, // user-picked override
+  stopSelector: null, // user-picked override for the stop/abort control
+  modelSelector: null, // user-picked override for the model dropdown trigger
+  newchatSelector: null, // user-picked override for the new-chat control
+  picking: null, // one of HOOKS, or null
+  before: '', // transcript snapshot taken by prepare()
+  beforeMessages: 0, // message count at that snapshot
 };
 
 /** Every element the driver needs. Pick targets and `health` rows follow this. */
@@ -106,14 +106,19 @@ function matches(el, sel) {
 function emit(channel, payload) {
   try {
     ipcRenderer.sendToHost(channel, payload);
-  } catch { /* host detached mid-run */ }
+  } catch {
+    /* host detached mid-run */
+  }
 }
 
 function cssPath(el) {
   // Short, reasonably stable path: prefer id, then data-* attrs, then nth-child.
   const parts = [];
   for (let n = el; n && n.nodeType === 1 && parts.length < 6; n = n.parentElement) {
-    if (n.id) { parts.unshift(`#${CSS.escape(n.id)}`); break; }
+    if (n.id) {
+      parts.unshift(`#${CSS.escape(n.id)}`);
+      break;
+    }
     const dataAttr = [...n.attributes].find((a) => a.name.startsWith('data-') && a.value);
     if (dataAttr) {
       parts.unshift(`${n.tagName.toLowerCase()}[${dataAttr.name}="${CSS.escape(dataAttr.value)}"]`);
@@ -163,8 +168,7 @@ let rootCache = { el: null, at: 0 };
 let sendCache = { el: null, at: 0 };
 let modelCache = { el: null, at: 0 };
 
-const cacheHit = (c, ms = NODE_CACHE_MS) =>
-  c.el && c.el.isConnected && Date.now() - c.at < ms;
+const cacheHit = (c, ms = NODE_CACHE_MS) => c.el && c.el.isConnected && Date.now() - c.at < ms;
 
 /** A pick, a clear or a navigation makes every remembered node a guess. */
 function invalidateCaches() {
@@ -197,20 +201,27 @@ function findComposer() {
 function locateComposer() {
   if (state.composerSelector) {
     const el = q1(state.composerSelector);
-    if (visible(el)) { via.composer = 'picked'; return el; }
+    if (visible(el)) {
+      via.composer = 'picked';
+      return el;
+    }
   }
   // Identity beats size: when we know exactly which node it is, do not put it
   // through the "is this big enough to be a composer" filter below.
   for (const sel of COMPOSER_SELECTORS) {
     const el = q1(sel);
-    if (visible(el)) { via.composer = 'known'; return el; }
+    if (visible(el)) {
+      via.composer = 'known';
+      return el;
+    }
   }
   const candidates = [
-    ...document.querySelectorAll(
-      '[contenteditable="true"], textarea, [role="textbox"]'
-    ),
+    ...document.querySelectorAll('[contenteditable="true"], textarea, [role="textbox"]'),
   ].filter((el) => visible(el, 40)); // a composer is never a tiny icon
-  if (!candidates.length) { via.composer = null; return null; }
+  if (!candidates.length) {
+    via.composer = null;
+    return null;
+  }
   via.composer = 'heuristic';
   // The composer is the lowest one on screen (ChatGPT docks it to the bottom).
   return candidates.sort(
@@ -272,21 +283,29 @@ function scrollableAncestor(start) {
 function locateOutputRoot() {
   if (state.outputSelector) {
     const el = q1(state.outputSelector);
-    if (el) { via.output = 'picked'; return el; }
+    if (el) {
+      via.output = 'picked';
+      return el;
+    }
   }
   // Anchor on a real message when there is one: the thread's scroller is its
   // nearest scrollable ancestor, and that is true whatever the layout does.
   const msgs = messageNodes();
   if (msgs.length) {
     const root = scrollableAncestor(msgs[msgs.length - 1]);
-    if (root) { via.output = 'known'; return root; }
+    if (root) {
+      via.output = 'known';
+      return root;
+    }
   }
 
   const composer = findComposer();
-  const fromComposer = composer && composer.parentElement
-    ? scrollableAncestor(composer.parentElement)
-    : null;
-  if (fromComposer) { via.output = 'heuristic'; return fromComposer; }
+  const fromComposer =
+    composer && composer.parentElement ? scrollableAncestor(composer.parentElement) : null;
+  if (fromComposer) {
+    via.output = 'heuristic';
+    return fromComposer;
+  }
 
   // Last resort: the largest scrollable region on the page.
   const scrollers = [...document.querySelectorAll('div, main, section')]
@@ -297,10 +316,14 @@ function locateOutputRoot() {
       return r.height > 200 && r.width > 200;
     })
     .sort((a, b) => {
-      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const ra = a.getBoundingClientRect(),
+        rb = b.getBoundingClientRect();
       return ra.width * ra.height - rb.width * rb.height;
     });
-  if (scrollers.length) { via.output = 'heuristic'; return scrollers.pop(); }
+  if (scrollers.length) {
+    via.output = 'heuristic';
+    return scrollers.pop();
+  }
 
   via.output = null;
   return document.querySelector('main') || document.body;
@@ -538,7 +561,10 @@ function findSendButton() {
 function locateSendButton() {
   if (state.sendSelector) {
     const el = q1(state.sendSelector);
-    if (visible(el) && !stillStop(el)) { via.send = 'picked'; return el; }
+    if (visible(el) && !stillStop(el)) {
+      via.send = 'picked';
+      return el;
+    }
   }
   // While a reply streams this testid belongs to the stop button instead, so an
   // exact match on "send-button" can never hand back the abort control.
@@ -549,7 +575,10 @@ function locateSendButton() {
   }
 
   const composer = findComposer();
-  if (!composer) { via.send = null; return null; }
+  if (!composer) {
+    via.send = null;
+    return null;
+  }
   const cr = composer.getBoundingClientRect();
 
   // The model dropdown and the stop button both sit in reach of the composer
@@ -567,7 +596,10 @@ function locateSendButton() {
     const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
     return /\b(send|submit)\b/i.test(label);
   });
-  if (byLabel.length) { via.send = 'known'; return byLabel[0]; }
+  if (byLabel.length) {
+    via.send = 'known';
+    return byLabel[0];
+  }
 
   const near = all.filter((b) => {
     const r = b.getBoundingClientRect();
@@ -580,12 +612,14 @@ function locateSendButton() {
   // Send is an icon button: no text of its own. Anything with a word in it is
   // a mode/model/attachment control, not send.
   const iconOnly = near.filter((b) => !(b.textContent || '').trim());
-  const pool = iconOnly.length ? iconOnly : near.filter((b) => !MODEL_HINT.test(b.textContent || ''));
+  const pool = iconOnly.length
+    ? iconOnly
+    : near.filter((b) => !MODEL_HINT.test(b.textContent || ''));
 
   // Rightmost wins - send sits at the end of the toolbar.
-  const found = pool.sort(
-    (a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right
-  ).pop() || null;
+  const found =
+    pool.sort((a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right).pop() ||
+    null;
   via.send = found ? 'heuristic' : null;
   return found;
 }
@@ -656,7 +690,9 @@ function isBillingish(el) {
     const href = link.getAttribute('href') || '';
     if (href && href !== '#' && !/^javascript:/i.test(href)) return true;
   }
-  return !!el.closest('[data-testid*="upgrade" i], [data-testid*="billing" i], [data-testid*="account" i]');
+  return !!el.closest(
+    '[data-testid*="upgrade" i], [data-testid*="billing" i], [data-testid*="account" i]'
+  );
 }
 
 /**
@@ -681,11 +717,17 @@ const MODEL_SCORE_FLOOR = 2;
 function locateModelTrigger() {
   if (state.modelSelector) {
     const el = q1(state.modelSelector);
-    if (visible(el)) { via.model = 'picked'; return el; }
+    if (visible(el)) {
+      via.model = 'picked';
+      return el;
+    }
   }
   for (const sel of MODEL_SELECTORS) {
     const el = q1(sel);
-    if (visible(el) && !isBillingish(el)) { via.model = 'known'; return el; }
+    if (visible(el) && !isBillingish(el)) {
+      via.model = 'known';
+      return el;
+    }
   }
 
   // Only on a conversation page. On /admin/billing the scan matched a "Turn on
@@ -695,9 +737,7 @@ function locateModelTrigger() {
     return null;
   }
 
-  const scored = [
-    ...document.querySelectorAll('button, [role="button"], [role="combobox"]'),
-  ]
+  const scored = [...document.querySelectorAll('button, [role="button"], [role="combobox"]')]
     .filter(visible)
     // A model picker is a menu opener. Requiring the affordance rejects the
     // plain action buttons that merely happen to contain a model-ish word.
@@ -731,7 +771,10 @@ function locateModelTrigger() {
 
   // A weak best candidate is worse than none: the caller can say "use Pick
   // Model", but it cannot undo a click on whatever this returned.
-  if (!scored.length || scored[0].score < MODEL_SCORE_FLOOR) { via.model = null; return null; }
+  if (!scored.length || scored[0].score < MODEL_SCORE_FLOOR) {
+    via.model = null;
+    return null;
+  }
   via.model = 'heuristic';
   return scored[0].b;
 }
@@ -750,9 +793,7 @@ function safeTrigger() {
 
 function openMenuItems() {
   const items = [
-    ...document.querySelectorAll(
-      '[role="menuitem"], [role="option"], [role="menuitemradio"]'
-    ),
+    ...document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]'),
   ].filter(visible);
   return items.map((el) => ({ el, label: (el.innerText || '').trim().split('\n')[0] }));
 }
@@ -793,7 +834,9 @@ async function listModels() {
     labels = items.map((it) => it.label).filter(isModelLabel);
     if (labels.length >= 2) {
       await sleep(250); // let the rest of the list paint
-      labels = openMenuItems().map((it) => it.label).filter(isModelLabel);
+      labels = openMenuItems()
+        .map((it) => it.label)
+        .filter(isModelLabel);
       break;
     }
   }
@@ -876,7 +919,8 @@ function fenceOf(pre) {
   // A lone word followed by Copy/Edit is the language chip, not code. Requiring
   // the toolbar row after it is what stops a real first line being eaten.
   if (
-    lines[0] && /^[\w+#-]{1,20}$/.test(lines[0].trim()) &&
+    lines[0] &&
+    /^[\w+#-]{1,20}$/.test(lines[0].trim()) &&
     CODE_TOOLBAR.test((lines[1] || '').trim())
   ) {
     lang = lines[0].trim();
@@ -1005,10 +1049,7 @@ const isField = (el) => !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'IN
 
 /** Can text actually be put into this thing right now? */
 const isEditable = (el) =>
-  !!el &&
-  (el.isContentEditable || isField(el)) &&
-  !isDisabled(el) &&
-  el.readOnly !== true;
+  !!el && (el.isContentEditable || isField(el)) && !isDisabled(el) && el.readOnly !== true;
 
 /**
  * What the composer holds. textContent rather than innerText: this is polled
@@ -1048,7 +1089,9 @@ function emptyComposer(el) {
     range.selectNodeContents(el);
     sel.addRange(range);
     document.execCommand('delete', false, null);
-  } catch { /* no selection API in this frame state */ }
+  } catch {
+    /* no selection API in this frame state */
+  }
   return !composerValue(el).trim();
 }
 
@@ -1075,11 +1118,14 @@ const LEFTOVER_FATAL = 200;
  * "not there" for a tab that is merely busy costs the caller a whole round.
  */
 async function prepare() {
-  let composer = null;
+  let composer;
   const deadline = Date.now() + PREPARE_WAIT_MS;
   for (;;) {
     const el = findComposer();
-    if (isEditable(el)) { composer = el; break; }
+    if (isEditable(el)) {
+      composer = el;
+      break;
+    }
     if (Date.now() >= deadline) {
       throw new Error(
         el
@@ -1114,7 +1160,7 @@ async function prepare() {
   if (leftover.length >= LEFTOVER_FATAL) {
     throw new Error(
       `composer still holds ${leftover.length} chars of the previous prompt ` +
-      '- refusing to append; focus the app window or clear the composer'
+        '- refusing to append; focus the app window or clear the composer'
     );
   }
   return {
@@ -1138,7 +1184,10 @@ function composerText() {
   return composerValue(findComposer());
 }
 
-const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const norm = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
 
 /**
  * Status lines shown while the model works - never part of an answer.
@@ -1172,7 +1221,10 @@ const CHROME =
  * it, which on the small-answer path is most of the file.
  */
 function afterEcho(text, full, before) {
-  const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = String(text)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
   // A little slack, because earlier turns can reflow between the snapshot and
   // now (a "Show more" collapsing) and shift the baseline by a few characters.
   // Never more than a quarter of it, though: on a short baseline a fixed slack
@@ -1297,8 +1349,8 @@ function replyDelta(text, before, echoSeen, wanted) {
 const STUCK_MS = 300000;
 
 /** Consecutive stop-free polls (200ms each) before we believe the answer ended. */
-const IDLE_TICKS = 15;            // 3s, with no corroboration
-const IDLE_TICKS_SEND_READY = 8;  // 1.6s, with the send control back on screen
+const IDLE_TICKS = 15; // 3s, with no corroboration
+const IDLE_TICKS_SEND_READY = 8; // 1.6s, with the send control back on screen
 
 /** How long a prompt may take to appear in the transcript before we call it lost. */
 const DELIVERY_GRACE_MS = 90000;
@@ -1335,7 +1387,10 @@ async function awaitReply(opts = {}, driveId = null) {
   let echoSeen = false;
   const wanted = norm(text).slice(0, 40);
   while (Date.now() - started < 30000) {
-    if (echoVisible(wanted)) { echoSeen = true; break; }
+    if (echoVisible(wanted)) {
+      echoSeen = true;
+      break;
+    }
     await sleep(250);
   }
 
@@ -1419,13 +1474,16 @@ async function awaitReply(opts = {}, driveId = null) {
     // rather than sitting here for the full ten minutes. A send click that did
     // not register, or a transcript we can no longer read, both land here.
     if (
-      !meaningful && !echoSeen && !generating && !sawGenerating &&
+      !meaningful &&
+      !echoSeen &&
+      !generating &&
+      !sawGenerating &&
       Date.now() - started > DELIVERY_GRACE_MS &&
       messageNodes().length <= beforeMessages
     ) {
       throw new Error(
         `prompt never reached the chat - no new message in ${Math.round(DELIVERY_GRACE_MS / 1000)}s` +
-        missingNote()
+          missingNote()
       );
     }
 
@@ -1471,7 +1529,7 @@ async function awaitReply(opts = {}, driveId = null) {
     isGenerating()
       ? 'still generating after the full timeout - reply abandoned rather than truncated'
       : `no response detected before timeout (echo ${echoSeen ? 'seen' : 'never rendered'}, ` +
-        `${messageNodes().length} messages)${missingNote()}`
+          `${messageNodes().length} messages)${missingNote()}`
   );
 }
 
@@ -1516,7 +1574,7 @@ function health() {
     via: el ? via[name] : null,
     override: state[OVERRIDE_KEY[name]] || null,
     selector: el ? cssPath(el) : null,
-    detail: el ? (opts.detail ? opts.detail(el) : '') : (opts.absent || ''),
+    detail: el ? (opts.detail ? opts.detail(el) : '') : opts.absent || '',
     critical: !!opts.critical,
     pick: name,
   });
@@ -1536,13 +1594,13 @@ function health() {
       absent: 'no scrollable conversation container',
     }),
     row('send', send, {
-      detail: (el) => (labelOf(el).trim() || 'icon button'),
+      detail: (el) => labelOf(el).trim() || 'icon button',
       // ChatGPT renders a voice button until the composer holds text, so an
       // absent send button on an idle tab is normal, not broken.
       absent: 'not rendered while the composer is empty - Enter is the fallback',
     }),
     row('stop', stop, {
-      detail: (el) => (labelOf(el).trim() || 'icon button'),
+      detail: (el) => labelOf(el).trim() || 'icon button',
       absent: lastStopSeenAt
         ? 'only rendered while generating - seen earlier this session'
         : 'only rendered while generating - never seen yet',
@@ -1552,7 +1610,7 @@ function health() {
       absent: 'no menu-opening control with a model-ish label',
     }),
     row('newchat', newchat, {
-      detail: (el) => (labelOf(el).trim() || (el.textContent || '').trim().slice(0, 24)),
+      detail: (el) => labelOf(el).trim() || (el.textContent || '').trim().slice(0, 24),
       absent: 'no new-chat control (navigation is used instead on this site)',
     }),
   ];
@@ -1602,7 +1660,7 @@ async function dumpMenu() {
   const pool = [
     ...document.querySelectorAll(
       '[role="menu"] *, [role="listbox"] *, [role="dialog"] *, [data-overlay] *, ' +
-      '[data-radix-popper-content-wrapper] *'
+        '[data-radix-popper-content-wrapper] *'
     ),
   ];
   const sample = pool
@@ -1634,8 +1692,10 @@ function clearComposer() {
 function describeSend() {
   const b = findSendButton();
   if (!b) return false;
-  return (b.getAttribute('aria-label') || b.title || b.textContent || 'icon button').trim() ||
-    'icon button';
+  return (
+    (b.getAttribute('aria-label') || b.title || b.textContent || 'icon button').trim() ||
+    'icon button'
+  );
 }
 
 /** Diagnostic: what buttons actually surround the composer? */
@@ -1656,8 +1716,10 @@ function dumpButtons() {
         aria: b.getAttribute('aria-label'),
         testid: b.getAttribute('data-testid'),
         disabled: isDisabled(b),
-        x: Math.round(r.left), right: Math.round(r.right),
-        w: Math.round(r.width), h: Math.round(r.height),
+        x: Math.round(r.left),
+        right: Math.round(r.right),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
         svg: !!b.querySelector('svg'),
       };
     })
@@ -1739,15 +1801,22 @@ const isHistoryLink = (el) => !!el.closest('a[href^="/c/"]');
 function findNewChatButton() {
   if (state.newchatSelector) {
     const el = q1(state.newchatSelector);
-    if (visible(el) && !isHistoryLink(el)) { via.newchat = 'picked'; return el; }
+    if (visible(el) && !isHistoryLink(el)) {
+      via.newchat = 'picked';
+      return el;
+    }
   }
   for (const sel of NEW_CHAT_SELECTORS) {
     const el = q1(sel);
-    if (visible(el) && !isHistoryLink(el)) { via.newchat = 'known'; return el; }
+    if (visible(el) && !isHistoryLink(el)) {
+      via.newchat = 'known';
+      return el;
+    }
   }
 
-  const candidates = [...document.querySelectorAll('button, [role="button"], a[href]')]
-    .filter((b) => !isHistoryLink(b));
+  const candidates = [...document.querySelectorAll('button, [role="button"], a[href]')].filter(
+    (b) => !isHistoryLink(b)
+  );
   const labelled = candidates.filter((b) => {
     const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
     return NEW_CHAT_LABEL.test(label) || /\bnew conversation\b/i.test(label);
@@ -1890,9 +1959,7 @@ function resolvePick(which, target) {
   if (which === 'composer') {
     const el =
       target.closest('[contenteditable="true"], textarea, input, [role="textbox"]') || target;
-    return isEditable(el)
-      ? { el }
-      : { error: 'that is not something text can be typed into' };
+    return isEditable(el) ? { el } : { error: 'that is not something text can be typed into' };
   }
 
   if (which === 'output') {
@@ -2004,8 +2071,7 @@ function setSelectors(args = {}) {
   return { applied, rejected, overrides: overrides() };
 }
 
-const overrides = () =>
-  Object.fromEntries(HOOKS.map((h) => [h, state[OVERRIDE_KEY[h]] || null]));
+const overrides = () => Object.fromEntries(HOOKS.map((h) => [h, state[OVERRIDE_KEY[h]] || null]));
 
 /* ------------------------------------------------------------ declutter */
 
@@ -2028,7 +2094,10 @@ function declutter() {
   // Restore anything whose banner text has gone: the site dismissed it, or we
   // hid the wrong node and the user deserves it back without a reload.
   for (const [node, prev] of hiddenNodes) {
-    if (!node.isConnected) { hiddenNodes.delete(node); continue; }
+    if (!node.isConnected) {
+      hiddenNodes.delete(node);
+      continue;
+    }
     if (BANNER_TEXT.test(node.textContent || '')) continue;
     node.style.setProperty('display', prev.display, prev.priority);
     if (!node.getAttribute('style')) node.removeAttribute('style');
@@ -2103,8 +2172,7 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
     else if (cmd === 'transcriptTail') {
       // The newest message, for autopilot to read what the user just typed.
       result = transcriptTail(args.tail || 1200);
-    }
-    else if (cmd === 'describeSend') result = describeSend();
+    } else if (cmd === 'describeSend') result = describeSend();
     else if (cmd === 'dumpMenu') result = await dumpMenu();
     else if (cmd === 'pick') result = startPick(args.which);
     else if (cmd === 'listModels') result = await listModels();
@@ -2122,7 +2190,9 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
       result = {
         url: location.href,
         composer: composer ? cssPath(composer) : null,
-        sendButton: send ? (send.getAttribute('aria-label') || send.textContent || '?').trim() : null,
+        sendButton: send
+          ? (send.getAttribute('aria-label') || send.textContent || '?').trim()
+          : null,
         modelTrigger: model ? (model.textContent || '').trim() : null,
         outputRoot: outputRoot ? cssPath(outputRoot) : null,
         transcriptChars: transcriptSize(),
@@ -2130,8 +2200,7 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
         generating: isGenerating(),
         overrides: overrides(),
       };
-    }
-    else if (cmd === 'setSelectors') result = setSelectors(args);
+    } else if (cmd === 'setSelectors') result = setSelectors(args);
     else throw new Error(`unknown cmd ${cmd}`);
     ipcRenderer.sendToHost('drive:done', { id, result });
   } catch (err) {

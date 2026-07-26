@@ -44,7 +44,11 @@ module.exports = {
     // temporary-chat flag above.
     freshChatByNavigation: true,
     partition: 'persist:chatgpt',
-    authCookies: ['__Secure-next-auth.session-token', '__Secure-next-auth.callback-url', '_account'],
+    authCookies: [
+      '__Secure-next-auth.session-token',
+      '__Secure-next-auth.callback-url',
+      '_account',
+    ],
     primaryAuthCookie: '__Secure-next-auth.session-token',
     cookieDomains: ['chatgpt.com', 'openai.com'],
     newChatLabel: /\bnew chat\b/i,

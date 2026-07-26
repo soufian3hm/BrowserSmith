@@ -146,11 +146,9 @@ const DEFINITION_OF_DONE = {
   vite:
     '`npm run dev` serves the requested app: index.html loads the src/ entry ' +
     'and every import resolves to a file that exists',
-  static:
-    'opening index.html straight from disk shows the complete working result',
+  static: 'opening index.html straight from disk shows the complete working result',
   node: '`node index.js` runs cleanly and demonstrates the requested behavior',
-  python:
-    '`python main.py` runs cleanly and demonstrates the requested behavior',
+  python: '`python main.py` runs cleanly and demonstrates the requested behavior',
 };
 
 /** A believable example path for the planner prompt, per mode. */
@@ -166,20 +164,15 @@ const EXAMPLE_PATH = {
 /* -------------------------------------------------------------- auto mode */
 
 /**
- * Anything that has to be LOOKED at rather than run in a terminal. Used only
- * as the tie-breaker after every explicit stack signal has missed.
- */
-const VISUAL_ASK =
-  /\b(game|arcade|platformer|racing|racer|puzzle|clone|animation|animate[ds]?|canvas|webgl|three\.?js|3d|svg|ui|interface|page|webpage|website|web ?app|site|landing|portfolio|dashboard|chart|graph|visuali[sz]\w*|simulator|editor|drawing|paint|gallery|slider|carousel|clock|timer|calculator|todo|quiz|player|map|form)\b/i;
-
-/**
  * Guess a concrete MODES key from the raw request text, for when the user
  * leaves the mode on Auto.
  *
  * A live run answered "a next js app" with index.html + package.json and the
- * auditor rightly rejected it, so the stack signals are checked before the
- * visual/terminal tie-break. "next js" is written with a space at least as
- * often as "next.js", hence the loose separator.
+ * auditor rightly rejected it, so an explicitly named stack always wins here.
+ * A request that names none stays 'auto' on purpose - guessing a framework from
+ * how visual the request sounded is what that live run got wrong. "next js" is
+ * written with a space at least as often as "next.js", hence the loose
+ * separator.
  */
 function inferMode(requestText) {
   const t = String(requestText || '');
@@ -316,7 +309,7 @@ const TAGS = {
     // The leading phrase is also how rejectReason spots the prompt echoed
     // back as a "file", so it has to stay word for word.
     `Output only the complete contents of ${path} - in ONE fenced code block, ` +
-      `nothing before it, nothing after it, never split across blocks.`,
+    `nothing before it, nothing after it, never split across blocks.`,
   // condense() here and not at the call site: a 51KB body typed into the
   // composer wedged the tab, prepare/composerText timed out and the run
   // silently skipped review. The reviewer only ever answers one word.
@@ -359,7 +352,11 @@ const TAGS = {
 
 /** The auditor's answer: null when it says the project is finished. */
 function parseAudit(reply) {
-  const t = clean(unfence(reply)).split('\n').map((l) => l.trim()).filter(Boolean)[0] || '';
+  const t =
+    clean(unfence(reply))
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)[0] || '';
   if (/^\W*DONE\W*$/i.test(t)) return null;
   return t.slice(0, 200) || null;
 }
@@ -380,18 +377,20 @@ const PLACEHOLDER_LINE =
 
 /** Drop UI noise the transcript picks up around a reply. */
 function clean(text) {
-  return String(text || '')
-    .split('\n')
-    .filter((l) => !PLACEHOLDER_LINE.test(l.trim()))
-    // Chat UIs stamp a time on each message bubble, e.g. "4:37 AM".
-    .filter((l) => !/^\d{1,2}:\d{2}\s*(AM|PM)?$/i.test(l.trim()))
-    // ChatGPT message chrome that sits inside the transcript text. "Retry" is
-    // deliberately absent: it is the reviewer's verdict word.
-    .filter(
-      (l) => !/^(show (more|less)|copy( code)?|edit|regenerate|share|read aloud)$/i.test(l.trim())
-    )
-    .join('\n')
-    .trim();
+  return (
+    String(text || '')
+      .split('\n')
+      .filter((l) => !PLACEHOLDER_LINE.test(l.trim()))
+      // Chat UIs stamp a time on each message bubble, e.g. "4:37 AM".
+      .filter((l) => !/^\d{1,2}:\d{2}\s*(AM|PM)?$/i.test(l.trim()))
+      // ChatGPT message chrome that sits inside the transcript text. "Retry" is
+      // deliberately absent: it is the reviewer's verdict word.
+      .filter(
+        (l) => !/^(show (more|less)|copy( code)?|edit|regenerate|share|read aloud)$/i.test(l.trim())
+      )
+      .join('\n')
+      .trim()
+  );
 }
 
 /** Strip a single surrounding fenced code block, if present. */
@@ -410,7 +409,12 @@ function parsePath(reply) {
   if (/^\W*DONE\W*$/i.test(text)) return 'DONE';
   const line = text
     .split('\n')
-    .map((l) => l.trim().replace(/^[-*`]\s*/, '').replace(/[`'"]/g, ''))
+    .map((l) =>
+      l
+        .trim()
+        .replace(/^[-*`]\s*/, '')
+        .replace(/[`'"]/g, '')
+    )
     .find(
       (l) =>
         l &&
@@ -425,7 +429,10 @@ function parsePath(reply) {
 
 /** The reviewer's verdict word, or null if it did not follow the contract. */
 function parseVerdict(reply) {
-  const word = unfence(reply).trim().toUpperCase().match(/\b(PRINT|RETRY)\b/);
+  const word = unfence(reply)
+    .trim()
+    .toUpperCase()
+    .match(/\b(PRINT|RETRY)\b/);
   return word ? word[1] : null;
 }
 
@@ -459,7 +466,8 @@ const FENCE_LINE = /^\s*```+\s*([\w+#.-]*)\s*[^`]*$/;
  * install commands, sample output, a diff. Dropped only when a real block
  * survives, so a single ```bash file still comes through.
  */
-const SIDECAR_LANG = /^(bash|sh|shell|zsh|console|cmd|powershell|ps1|text|plaintext|output|log|diff)$/;
+const SIDECAR_LANG =
+  /^(bash|sh|shell|zsh|console|cmd|powershell|ps1|text|plaintext|output|log|diff)$/;
 
 /** The first line that could plausibly BE a file rather than talk about one. */
 const FILE_START = [
@@ -555,9 +563,7 @@ function extractBody(reply, filePath = '') {
       const real = blocks.filter((b) => !SIDECAR_LANG.test(b.lang));
       if (real.length) blocks = real;
     }
-    body = blocks.length
-      ? blocks.map((b) => b.body).join('\n')
-      : salvageUnfenced(text);
+    body = blocks.length ? blocks.map((b) => b.body).join('\n') : salvageUnfenced(text);
   }
 
   body = stripStrayFences(body, filePath).replace(/^\n+/, '').replace(/\s+$/, '');
@@ -612,7 +618,12 @@ function rejectReason(body) {
   if (/<style\b/i.test(t) && !/<\/style\s*>/i.test(t)) return 'truncated: unclosed <style>';
   if (/<html\b/i.test(t) && !/<\/html\s*>/i.test(t)) return 'truncated: unclosed <html>';
 
-  const last = (t.split('\n').filter((l) => l.trim()).pop() || '').trim();
+  const last = (
+    t
+      .split('\n')
+      .filter((l) => l.trim())
+      .pop() || ''
+  ).trim();
   const comment = /^(#|\/\/|\*|<!--|--|;)/.test(last) || /^[`'"]+$/.test(last);
   if (!comment && !/[;,{}()[\]>:]$/.test(last) && endsInsideString(last)) {
     return 'truncated: ends inside a string';

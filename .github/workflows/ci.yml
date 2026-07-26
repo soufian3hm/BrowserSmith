@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "test (node ${{ matrix.node }}, ${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # The floor is package.json's engines.node (>=22.13.0), not an older
+        # version that happens to work: a matrix entry below the declared floor
+        # advertises support the manifest refuses, and `npm ci` only warns about
+        # it, so the badge would go green on a Node this app does not support.
+        node: ["22", "24"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `npm ci` with no fallback. A `|| npm install` rescue would turn a
+      # lockfile that has drifted from the manifest into a green run, which is
+      # exactly the breakage test/repo.test.js exists to catch - a visitor
+      # cloning the repo gets the lockfile, so it failing to install IS the bug.
+      # The toolchain tests require electron at module scope, so the full
+      # dependency tree genuinely has to be installed here.
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      # electron/index.js throws unless its postinstall actually fetched the
+      # binary, and every test file that reaches toolchain.js requires electron
+      # at module scope. That download silently did not happen on a developer
+      # machine here while `npm ci` still reported success, which surfaces as a
+      # module-load error inside an unrelated test. Fail here instead, where the
+      # step name says what is wrong.
+      - name: Verify electron installed
+        run: node -e "require('electron')"
+
+      # Not `npm test`: bare `node --test` discovers test files on every
+      # supported Node version, and it keeps this job independent of whatever
+      # the test script happens to be.
+      - name: Test
+        run: node --test
+
+      # The main process, the preloads and the toolchain cannot be imported
+      # outside Electron, and they hold the platform branches that differ
+      # between Windows and everything else. Parsing every file on both
+      # operating systems is the cheapest guard against a syntax error shipping.
+      - name: Syntax-check every source file
+        shell: bash
+        run: |
+          set -e
+          for f in $(find src tools -name '*.js'); do
+            node --check "$f"
+          done
+
+  # A separate job, not another step in `test`: as a step it would be reported
+  # inside a matrix cell, so a style error and a genuinely failing test would be
+  # indistinguishable from the badge. Lint is platform-independent, so one cell
+  # is enough.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint
+        run: npm run lint
+
+      # No `prettier --check` step. .prettierrc pins endOfLine: lf while this
+      # repo has no .gitattributes and Windows contributors check out with
+      # core.autocrlf, so the check passes on this ubuntu runner and fails on
+      # every file for the Windows developers this app is built for. Formatting
+      # stays available as `npm run format` until that mismatch is settled.

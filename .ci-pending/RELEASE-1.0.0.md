@@ -46,6 +46,9 @@ app says so plainly instead of blaming the generated code.
   first review attempt, and its output checked by hand against a real file.
 - 108 automated tests covering the reply parsers, the patch engine, the runtime
   planner, the workspace sandbox and the packaging config.
+- Built on **Electron 43.2.0 / Chromium 150**, and booted from this exact tree:
+  four chat tabs attached and loaded, the 2x2 grid measured, the login carried
+  across from the previous runtime, no console errors.
 
 ## Known limitations
 
@@ -71,9 +74,9 @@ release artifact — there is a test that fails the build if they could.
 ## Checksums (SHA-256)
 
 ```
-d56067d4e41d8d19aaf086677c015c4d37f18be95fa76346fdd8296d850c01cf  BrowserSmith-1.0.0-win-x64-setup.exe
-e896322f1038e261a00c467a3e33833d27d541b7ef6482beb1945558769bae65  BrowserSmith-1.0.0-win-x64-portable.exe
-371955ffd942e3f53592161761529bf1e45db6e95daa64a24726151ae0a4aa61  BrowserSmith-1.0.0-win-x64.zip
+4afbfb92a5add6a879a5600dbb3235caaaae351d607f529c070a29d641243259  BrowserSmith-1.0.0-win-x64-setup.exe
+fd472148ad801954e545e382cd233d9d13ceac9c05b7cad7319bd93d22aec23c  BrowserSmith-1.0.0-win-x64-portable.exe
+0dd66d8233f359a1b29447af7990e7bcb601ca85a7b3d5476c30d1a808ed2d25  BrowserSmith-1.0.0-win-x64.zip
 ```
 
 Verify with:

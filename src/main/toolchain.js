@@ -28,13 +28,29 @@ const IS_WIN = process.platform === 'win32';
  */
 const ALLOWED = new Set([
   // JS/TS
-  'npm', 'pnpm', 'yarn', 'bun', 'node', 'deno',
+  'npm',
+  'pnpm',
+  'yarn',
+  'bun',
+  'node',
+  'deno',
   // Python
-  'python', 'python3', 'pip', 'pip3',
+  'python',
+  'python3',
+  'pip',
+  'pip3',
   // Compiled
-  'go', 'cargo', 'dotnet', 'mvn', 'gradle',
+  'go',
+  'cargo',
+  'dotnet',
+  'mvn',
+  'gradle',
   // Scripting
-  'ruby', 'bundle', 'php', 'bash', 'sh',
+  'ruby',
+  'bundle',
+  'php',
+  'bash',
+  'sh',
   // Build drivers
   'make',
 ]);
@@ -85,8 +101,14 @@ function validateArgv(cmd, args) {
   for (const raw of args) {
     if (typeof raw !== 'string') throw new Error('argument is not a string');
     if (raw.length > 4096) throw new Error('argument is too long');
-    // A NUL truncates argv inside libuv; a newline or an ESC can rewrite a
-    // terminal line and hide what actually ran.
+    // A newline or an ESC reaches the child untouched - measured, not assumed:
+    // spawnSync with an ESC and a newline in an argument exits 0 - and either
+    // can rewrite a terminal line so the panel hides what actually ran. NUL is
+    // the opposite case: Node rejects it first with ERR_INVALID_ARG_VALUE,
+    // naming an args[] index belonging to the command this file assembles
+    // rather than anything the caller passed. Screening the whole C0 range here
+    // means both failures name the argument instead.
+    // eslint-disable-next-line no-control-regex
     if (/[\u0000-\u001f\u007f]/.test(raw)) {
       throw new Error('argument contains a control character');
     }
@@ -324,10 +346,17 @@ function portHolder(port) {
       return resolve(null);
     }
     let out = '';
-    child.stdout.on('data', (b) => { out += b.toString(); });
+    child.stdout.on('data', (b) => {
+      out += b.toString();
+    });
     child.stderr.on('data', () => {});
     child.on('error', () => resolve(null)); // netstat/lsof missing is not fatal
-    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve(null); }, 4000);
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      resolve(null);
+    }, 4000);
     timer.unref?.();
     child.on('close', () => {
       clearTimeout(timer);
@@ -365,7 +394,8 @@ async function freePort(port) {
   return { freed: true, pid: holder.pid };
 }
 
-const PORT_IN_USE_RE = /EADDRINUSE|address already in use|port .*is (?:already )?in use|listen tcp .*: bind/i;
+const PORT_IN_USE_RE =
+  /EADDRINUSE|address already in use|port .*is (?:already )?in use|listen tcp .*: bind/i;
 
 function portFromText(text) {
   const m = String(text).match(/(?::|port\s+)(\d{2,5})\b/i);
@@ -431,7 +461,8 @@ async function run(win, project, cmd, args = [], opts = {}) {
       emit(win, 'tool:output', { project, cmd, text });
       appendRunLog(project, text);
     };
-    const collected = () => (truncated ? '[... earlier output trimmed ...]\n' : '') + chunks.join('');
+    const collected = () =>
+      (truncated ? '[... earlier output trimmed ...]\n' : '') + chunks.join('');
 
     child.stdout.on('data', push);
     child.stderr.on('data', push);
@@ -572,7 +603,10 @@ async function startProcessServer(win, project, cmd, args, opts = {}) {
         const found = portFromText(entry.url);
         if (found) entry.port = found;
         // Give the server a breath to finish binding before anyone loads it.
-        setTimeout(() => finish(resolve, { url: entry.url, pid: child.pid, port: entry.port }), 1500);
+        setTimeout(
+          () => finish(resolve, { url: entry.url, pid: child.pid, port: entry.port }),
+          1500
+        );
       }
     };
 
@@ -593,7 +627,9 @@ async function startProcessServer(win, project, cmd, args, opts = {}) {
           reject,
           new Error(
             `port ${portClash} is already in use` +
-              (holder ? ` (held by pid ${holder.pid}${holder.name ? ` - ${holder.name}` : ''})` : '') +
+              (holder
+                ? ` (held by pid ${holder.pid}${holder.name ? ` - ${holder.name}` : ''})`
+                : '') +
               ' - stop that process or let the server pick another port'
           )
         );
@@ -601,13 +637,10 @@ async function startProcessServer(win, project, cmd, args, opts = {}) {
       finish(reject, new Error(`dev server exited (${code}) before printing a URL`));
     });
 
-    const timer = setTimeout(
-      () => {
-        stopServer(project); // do not leave the URL-less server running forever
-        finish(reject, new Error('dev server printed no URL in time'));
-      },
-      timeoutMs
-    );
+    const timer = setTimeout(() => {
+      stopServer(project); // do not leave the URL-less server running forever
+      finish(reject, new Error('dev server printed no URL in time'));
+    }, timeoutMs);
   });
 }
 
@@ -635,11 +668,17 @@ function treeKill(child) {
     // which makes the pid a process-group id we can signal as a whole.
     try {
       process.kill(-child.pid, 'SIGTERM');
-      setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 3000).unref?.();
+      setTimeout(() => {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {}
+      }, 3000).unref?.();
     } catch {
       child.kill('SIGTERM');
     }
-  } catch { /* already gone */ }
+  } catch {
+    /* already gone */
+  }
 }
 
 function stopServer(project) {
@@ -684,10 +723,16 @@ function stopPid(pid) {
   const target = Number(pid);
   if (!Number.isInteger(target) || target <= 0) throw new Error('invalid pid');
   for (const [project, e] of servers) {
-    if (e.child && e.child.pid === target) { stopServer(project); return true; }
+    if (e.child && e.child.pid === target) {
+      stopServer(project);
+      return true;
+    }
   }
   for (const rec of live) {
-    if (rec.child && rec.child.pid === target) { treeKill(rec.child); return true; }
+    if (rec.child && rec.child.pid === target) {
+      treeKill(rec.child);
+      return true;
+    }
   }
   return false; // never signal a pid this app did not spawn
 }
@@ -802,7 +847,9 @@ async function screenshot(project, url, opts = {}) {
       win.loadURL(url),
       new Promise((_r, rj) => {
         loadTimer = setTimeout(() => {
-          try { win.webContents.stop(); } catch {}
+          try {
+            win.webContents.stop();
+          } catch {}
           rj(new Error(`preview did not load in ${Math.round(loadTimeoutMs / 1000)}s: ${url}`));
         }, loadTimeoutMs);
         loadTimer.unref?.();
@@ -886,7 +933,9 @@ async function screenshot(project, url, opts = {}) {
           if (!savedImage.isEmpty()) clipboard.writeImage(savedImage);
           else if (savedText) clipboard.writeText(savedText);
           else clipboard.clear();
-        } catch { /* the user's clipboard, not ours to fail a run over */ }
+        } catch {
+          /* the user's clipboard, not ours to fail a run over */
+        }
       };
       const t = setTimeout(restore, opts.clipboardHoldMs ?? 20000);
       t.unref?.();
@@ -954,13 +1003,12 @@ const SERVER_RE = new RegExp(
 const binCache = new Map();
 function hasBinary(cmd) {
   if (binCache.has(cmd)) return binCache.get(cmd);
-  let ok = false;
+  let ok;
   try {
-    const probe = require('node:child_process').spawnSync(
-      IS_WIN ? 'where' : 'which',
-      [cmd],
-      { windowsHide: true, timeout: 4000 }
-    );
+    const probe = require('node:child_process').spawnSync(IS_WIN ? 'where' : 'which', [cmd], {
+      windowsHide: true,
+      timeout: 4000,
+    });
     ok = probe.status === 0;
   } catch {
     ok = false;
@@ -977,11 +1025,14 @@ const moduleCache = new Map();
 function hasPythonModule(bin, mod) {
   const key = `${bin}:${mod}`;
   if (moduleCache.has(key)) return moduleCache.get(key);
-  let ok = false;
+  let ok;
   try {
     const probe = require('node:child_process').spawnSync(
       bin,
-      ['-c', `import importlib.util,sys; sys.exit(0 if importlib.util.find_spec(${JSON.stringify(mod)}) else 1)`],
+      [
+        '-c',
+        `import importlib.util,sys; sys.exit(0 if importlib.util.find_spec(${JSON.stringify(mod)}) else 1)`,
+      ],
       { windowsHide: true, timeout: 8000 }
     );
     ok = probe.status === 0;
@@ -1043,12 +1094,14 @@ const RUNTIMES = [
     bin: () => firstBinary('go'),
     detect: (f) => f.includes('go.mod') || f.some((x) => x.endsWith('.go')),
     entry: (f) => f.find((x) => x === 'main.go') || f.find((x) => x.endsWith('.go')),
-    install: (f) => (f.includes('go.mod') ? { cmd: 'go', args: ['mod', 'download'], optional: true } : null),
+    install: (f) =>
+      f.includes('go.mod') ? { cmd: 'go', args: ['mod', 'download'], optional: true } : null,
     cmd: (bin, entry, f) => ({
       cmd: bin,
       args: f.includes('go.mod') ? ['run', '.'] : ['run', asEntryArg(entry)],
     }),
-    test: (f) => (f.some((x) => x.endsWith('_test.go')) ? { cmd: 'go', args: ['test', './...'] } : null),
+    test: (f) =>
+      f.some((x) => x.endsWith('_test.go')) ? { cmd: 'go', args: ['test', './...'] } : null,
   },
   {
     key: 'rust',
@@ -1058,7 +1111,10 @@ const RUNTIMES = [
     entry: () => 'src/main.rs',
     install: () => null, // cargo run fetches and builds in one step
     cmd: (bin) => ({ cmd: bin, args: ['run'] }),
-    test: (f) => (f.some((x) => x.startsWith('tests/') || x.endsWith('.rs')) ? { cmd: 'cargo', args: ['test'] } : null),
+    test: (f) =>
+      f.some((x) => x.startsWith('tests/') || x.endsWith('.rs'))
+        ? { cmd: 'cargo', args: ['test'] }
+        : null,
   },
   {
     key: 'dotnet',
@@ -1119,7 +1175,8 @@ const RUNTIMES = [
     bin: () => firstBinary('ruby'),
     detect: (f) => f.includes('config/application.rb') || f.includes('bin/rails'),
     entry: () => 'config/application.rb',
-    install: (f) => (f.includes('Gemfile') ? { cmd: 'bundle', args: ['install'], optional: true } : null),
+    install: (f) =>
+      f.includes('Gemfile') ? { cmd: 'bundle', args: ['install'], optional: true } : null,
     // Through bundler, because a Rails app's gems are almost never global.
     cmd: () => ({
       cmd: hasBinary('bundle') ? 'bundle' : 'ruby',
@@ -1128,9 +1185,10 @@ const RUNTIMES = [
         : [asEntryArg('bin/rails'), 'server', '-p', '3000'],
       serves: true,
     }),
-    test: (f) => (f.some((x) => x.startsWith('spec/')) && hasBinary('bundle')
-      ? { cmd: 'bundle', args: ['exec', 'rspec'] }
-      : { cmd: 'bundle', args: ['exec', 'rails', 'test'] }),
+    test: (f) =>
+      f.some((x) => x.startsWith('spec/')) && hasBinary('bundle')
+        ? { cmd: 'bundle', args: ['exec', 'rspec'] }
+        : { cmd: 'bundle', args: ['exec', 'rails', 'test'] },
   },
   {
     key: 'ruby',
@@ -1138,8 +1196,10 @@ const RUNTIMES = [
     bin: () => firstBinary('ruby'),
     detect: (f) => f.some((x) => x.endsWith('.rb')),
     entry: (f) =>
-      ['main.rb', 'app.rb', 'server.rb'].find((c) => f.includes(c)) || f.find((x) => x.endsWith('.rb')),
-    install: (f) => (f.includes('Gemfile') ? { cmd: 'bundle', args: ['install'], optional: true } : null),
+      ['main.rb', 'app.rb', 'server.rb'].find((c) => f.includes(c)) ||
+      f.find((x) => x.endsWith('.rb')),
+    install: (f) =>
+      f.includes('Gemfile') ? { cmd: 'bundle', args: ['install'], optional: true } : null,
     cmd: (bin, entry) => ({ cmd: bin, args: [asEntryArg(entry)] }),
   },
   {
@@ -1149,7 +1209,11 @@ const RUNTIMES = [
     detect: (f) => f.includes('artisan'),
     entry: () => 'artisan',
     install: () => null, // composer is not on the allow-list; vendor/ ships with the project
-    cmd: (bin) => ({ cmd: bin, args: [asEntryArg('artisan'), 'serve', '--port=8000'], serves: true }),
+    cmd: (bin) => ({
+      cmd: bin,
+      args: [asEntryArg('artisan'), 'serve', '--port=8000'],
+      serves: true,
+    }),
     test: () => ({ cmd: 'php', args: [asEntryArg('artisan'), 'test'] }),
   },
   {
@@ -1157,7 +1221,8 @@ const RUNTIMES = [
     label: 'PHP',
     bin: () => firstBinary('php'),
     detect: (f) => f.some((x) => x.endsWith('.php')),
-    entry: (f) => ['index.php', 'app.php'].find((c) => f.includes(c)) || f.find((x) => x.endsWith('.php')),
+    entry: (f) =>
+      ['index.php', 'app.php'].find((c) => f.includes(c)) || f.find((x) => x.endsWith('.php')),
     install: () => null,
     // PHP's built-in server is the sane way to preview a PHP project.
     cmd: (bin, entry) => ({ cmd: bin, args: ['-S', 'localhost:8000'], serves: true, entry }),
@@ -1166,7 +1231,8 @@ const RUNTIMES = [
     key: 'django',
     label: 'Django',
     bin: () => firstBinary('python', 'python3'),
-    detect: (f, ctx) => f.includes('manage.py') && /django/i.test(ctx.pySources || ctx.requirements || ''),
+    detect: (f, ctx) =>
+      f.includes('manage.py') && /django/i.test(ctx.pySources || ctx.requirements || ''),
     entry: () => 'manage.py',
     install: (f) => pipStep(f),
     // --noreload: the autoreloader forks a second process that our tree-kill
@@ -1206,7 +1272,9 @@ const RUNTIMES = [
     bin: () => firstBinary('python', 'python3'),
     detect: (f) => f.some((x) => x.endsWith('.py')),
     entry: (f) =>
-      ['main.py', 'app.py', 'server.py', 'run.py', '__main__.py', 'index.py'].find((c) => f.includes(c)) ||
+      ['main.py', 'app.py', 'server.py', 'run.py', '__main__.py', 'index.py'].find((c) =>
+        f.includes(c)
+      ) ||
       f.find((x) => x.endsWith('.py') && !x.includes('/')) ||
       f.find((x) => x.endsWith('.py')),
     install: (f) => pipStep(f),
@@ -1257,7 +1325,9 @@ const RUNTIMES = [
     label: 'Shell',
     bin: () => firstBinary('bash', 'sh'),
     detect: (f) => f.some((x) => x.endsWith('.sh')),
-    entry: (f) => ['main.sh', 'run.sh', 'start.sh'].find((c) => f.includes(c)) || f.find((x) => x.endsWith('.sh')),
+    entry: (f) =>
+      ['main.sh', 'run.sh', 'start.sh'].find((c) => f.includes(c)) ||
+      f.find((x) => x.endsWith('.sh')),
     install: () => null,
     cmd: (bin, entry) => ({ cmd: bin, args: [asEntryArg(entry)] }),
   },
@@ -1279,14 +1349,20 @@ function pipStep(files) {
   if (!pip) return null; // no pip: say nothing rather than fail a step that cannot run
   // --no-cache-dir keeps a model-authored requirements file from filling the
   // user's pip cache with packages they never asked for.
-  return { cmd: pip, args: ['install', '--no-cache-dir', '-r', 'requirements.txt'], optional: true };
+  return {
+    cmd: pip,
+    args: ['install', '--no-cache-dir', '-r', 'requirements.txt'],
+    optional: true,
+  };
 }
 
 function pytestStep(files) {
   const bin = firstBinary('python', 'python3');
   if (!bin) return null;
-  const hasTests = files.some((f) => /(^|\/)(test_[^/]+\.py|[^/]+_test\.py)$/.test(f)) ||
-    files.includes('pytest.ini') || files.includes('conftest.py');
+  const hasTests =
+    files.some((f) => /(^|\/)(test_[^/]+\.py|[^/]+_test\.py)$/.test(f)) ||
+    files.includes('pytest.ini') ||
+    files.includes('conftest.py');
   if (!hasTests || !hasPythonModule(bin, 'pytest')) return null;
   return { cmd: bin, args: ['-m', 'pytest', '-q'] };
 }
@@ -1404,15 +1480,28 @@ function detectJsFramework(pkg) {
 }
 
 async function exists(p) {
-  try { await fsp.access(p); return true; } catch { return false; }
+  try {
+    await fsp.access(p);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readIfPresent(p) {
-  try { return await fsp.readFile(p, 'utf8'); } catch { return ''; }
+  try {
+    return await fsp.readFile(p, 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 async function readJsonIfPresent(p) {
-  try { return JSON.parse(await fsp.readFile(p, 'utf8')); } catch { return null; }
+  try {
+    return JSON.parse(await fsp.readFile(p, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1435,12 +1524,13 @@ async function plan(project) {
   const files = all.filter((f) => !path.basename(f).startsWith('-'));
 
   const pkg = await readJsonIfPresent(path.join(dir, 'package.json'));
-  const scripts = pkg ? Object.keys(pkg.scripts || {}) : [];
 
   const htmlEntry =
     ['index.html', 'public/index.html', 'src/index.html', 'templates/index.html'].find((c) =>
       files.includes(c)
-    ) || files.find((f) => f.endsWith('.html')) || null;
+    ) ||
+    files.find((f) => f.endsWith('.html')) ||
+    null;
 
   const steps = [];
 
@@ -1485,7 +1575,8 @@ async function plan(project) {
 
     const hasDeps =
       Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length > 0 ||
-      (appPkg !== pkg && Object.keys({ ...appPkg.dependencies, ...appPkg.devDependencies }).length > 0);
+      (appPkg !== pkg &&
+        Object.keys({ ...appPkg.dependencies, ...appPkg.devDependencies }).length > 0);
     if (hasDeps) {
       steps.push({
         kind: 'install',
@@ -1501,7 +1592,8 @@ async function plan(project) {
     // (Astro, Vite, SvelteKit static, Next export). It must be built before it
     // can be served, and skipping that step made the preview a 404.
     const needsBuild =
-      appScripts.includes('build') && (!webScript || webScript === 'start' || webScript === 'preview');
+      appScripts.includes('build') &&
+      (!webScript || webScript === 'start' || webScript === 'preview');
     if (needsBuild) {
       steps.push({
         kind: 'build',
@@ -1545,7 +1637,14 @@ async function plan(project) {
     }
 
     // 2b. Node project with no dev script at all.
-    const entryCandidates = ['index.js', 'index.mjs', 'main.js', 'server.js', 'app.js', 'src/index.js'];
+    const entryCandidates = [
+      'index.js',
+      'index.mjs',
+      'main.js',
+      'server.js',
+      'app.js',
+      'src/index.js',
+    ];
     const entry =
       (pkg.main && files.includes(pkg.main) ? pkg.main : null) ||
       entryCandidates.find((c) => files.includes(c)) ||
@@ -1618,16 +1717,29 @@ async function plan(project) {
     }
 
     const inst = rt.install(files);
-    if (inst) steps.push({ kind: 'install', timeoutMs: 300000, label: `${inst.cmd} ${inst.args.join(' ')}`, ...inst });
+    if (inst)
+      steps.push({
+        kind: 'install',
+        timeoutMs: 300000,
+        label: `${inst.cmd} ${inst.args.join(' ')}`,
+        ...inst,
+      });
     const build = rt.build ? rt.build(files) : null;
-    if (build) steps.push({ kind: 'build', timeoutMs: 300000, label: `${build.cmd} ${build.args.join(' ')}`, ...build });
+    if (build)
+      steps.push({
+        kind: 'build',
+        timeoutMs: 300000,
+        label: `${build.cmd} ${build.args.join(' ')}`,
+        ...build,
+      });
 
     const spec = rt.cmd(bin, entry, files, ctx);
     const serves = spec.serves || SERVER_RE.test(ctx.sources);
     const testSpec = rt.test ? rt.test(files, ctx) : null;
-    const test = testSpec && hasBinary(testSpec.cmd)
-      ? { ...testSpec, label: `${testSpec.cmd} ${testSpec.args.join(' ')}` }
-      : null;
+    const test =
+      testSpec && hasBinary(testSpec.cmd)
+        ? { ...testSpec, label: `${testSpec.cmd} ${testSpec.args.join(' ')}` }
+        : null;
 
     if (serves) {
       return {
@@ -1669,7 +1781,9 @@ async function plan(project) {
       doneMeans:
         `\`${spec.cmd} ${spec.args.join(' ')}\` runs cleanly and does what was asked` +
         (htmlEntry ? `, and ${htmlEntry} opens and shows the result` : ''),
-      why: htmlEntry ? `${rt.label} entry plus an HTML artefact` : `${rt.label} entry, no listener opened`,
+      why: htmlEntry
+        ? `${rt.label} entry plus an HTML artefact`
+        : `${rt.label} entry, no listener opened`,
     };
   }
 
@@ -1737,7 +1851,11 @@ async function list(project) {
   const out = [];
   async function walk(d, rel) {
     let entries;
-    try { entries = await fsp.readdir(d, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = await fsp.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const e of entries) {
       if (e.isSymbolicLink()) continue; // a link can point out of the workspace, or at itself
       if (e.isDirectory()) {
@@ -2072,6 +2190,12 @@ function runShell(win, project, commandLine) {
   const line = String(commandLine || '').trim();
   if (!line) return Promise.resolve({ code: 0, timedOut: false });
   if (line.length > 8192) return Promise.reject(new Error('command line is too long'));
+  // Node throws ERR_INVALID_ARG_VALUE on a NUL before the OS ever sees it, and
+  // its message names 'args[1]' - an index into the powershell invocation this
+  // function builds, which the user never typed and cannot act on. Rejecting it
+  // here blames the command line by name. NUL only: a multi-line command pasted
+  // into the terminal panel is legitimate, and an ESC reaches the shell anyway.
+  // eslint-disable-next-line no-control-regex
   if (/\u0000/.test(line)) return Promise.reject(new Error('command line contains a NUL byte'));
 
   const TIMEOUT_MS = 600000; // 10 minutes
@@ -2082,9 +2206,7 @@ function runShell(win, project, commandLine) {
       try {
         child = spawn(
           IS_WIN ? 'powershell.exe' : '/bin/sh',
-          IS_WIN
-            ? ['-NoProfile', '-NonInteractive', '-Command', line]
-            : ['-lc', line],
+          IS_WIN ? ['-NoProfile', '-NonInteractive', '-Command', line] : ['-lc', line],
           {
             cwd,
             shell: false,

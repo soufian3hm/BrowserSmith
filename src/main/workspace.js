@@ -17,7 +17,9 @@ function computeRoot() {
     if (app && app.isPackaged) {
       return path.join(path.dirname(process.execPath), 'workspace');
     }
-  } catch { /* plain node (MCP server) - no electron */ }
+  } catch {
+    /* plain node (MCP server) - no electron */
+  }
   return path.resolve(__dirname, '..', '..', 'workspace');
 }
 const ROOT = computeRoot();
@@ -129,8 +131,24 @@ async function readFile(rel) {
 // and list() runs on every agent round - an unpruned walk turns each round into
 // a multi-second stall plus a huge IPC payload.
 const SKIP_DIRS = new Set([
-  'node_modules', '.next', '.git', '.preview', '.turbo', '.cache', 'dist', 'build', '__pycache__',
-  '.venv', 'venv', '.svelte-kit', '.astro', '.nuxt', '.output', 'target', 'vendor', '.browsersmith',
+  'node_modules',
+  '.next',
+  '.git',
+  '.preview',
+  '.turbo',
+  '.cache',
+  'dist',
+  'build',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.svelte-kit',
+  '.astro',
+  '.nuxt',
+  '.output',
+  'target',
+  'vendor',
+  '.browsersmith',
 ]);
 
 async function list() {

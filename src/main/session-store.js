@@ -86,12 +86,19 @@ async function status() {
   };
 }
 
-/** Full logout: wipe the partition so the next launch starts clean. */
+/**
+ * Full logout: wipe the partition so the next launch starts clean.
+ *
+ * No `storages` list on purpose - omitting it clears every type Chromium has.
+ * Naming them individually was both stale and short: it still asked for
+ * 'websql', which Chromium deleted, and never asked for 'filesystem' or
+ * 'shadercache', so a logout that promises a clean partition was leaving data
+ * behind. An explicit list also has to be revisited every time upstream renames
+ * a storage type, and a name that no longer exists fails silently.
+ */
 async function clear() {
   const s = get();
-  await s.clearStorageData({
-    storages: ['cookies', 'localstorage', 'indexdb', 'websql', 'serviceworkers', 'cachestorage'],
-  });
+  await s.clearStorageData();
   await flush();
 }
 
@@ -136,9 +143,7 @@ function watch() {
   // A login writes cookies; flush shortly after any cookie change settles.
   let debounce = null;
   s.cookies.on('changed', (_e, cookie) => {
-    const isAuth = AUTH_COOKIES.some(
-      (n) => cookie.name === n || cookie.name.startsWith(n + '.')
-    );
+    const isAuth = AUTH_COOKIES.some((n) => cookie.name === n || cookie.name.startsWith(n + '.'));
     if (!isAuth) return;
     clearTimeout(debounce);
     debounce = setTimeout(flush, 1500);

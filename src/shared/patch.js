@@ -37,8 +37,7 @@ const stripFences = (t) =>
     .filter((l) => !FENCE_LINE.test(l))
     .join('\n');
 
-const BLOCK_RE =
-  /<{3,}\s*FIND\s*\r?\n([\s\S]*?)\r?\n={3,}\s*\r?\n([\s\S]*?)\r?\n>{3,}\s*REPLACE/g;
+const BLOCK_RE = /<{3,}\s*FIND\s*\r?\n([\s\S]*?)\r?\n={3,}\s*\r?\n([\s\S]*?)\r?\n>{3,}\s*REPLACE/g;
 
 /** Pull every find/replace pair out of a reply. */
 function parsePatches(reply) {
@@ -83,7 +82,9 @@ function locate(hay, needle) {
   }
 
   const hayLines = hay.split('\n');
-  const needLines = needle.split('\n').filter((l, i, a) => !(l.trim() === '' && (i === 0 || i === a.length - 1)));
+  const needLines = needle
+    .split('\n')
+    .filter((l, i, a) => !(l.trim() === '' && (i === 0 || i === a.length - 1)));
   if (!needLines.length) return null;
   const trimmed = needLines.map((l) => l.trim());
 
@@ -91,7 +92,10 @@ function locate(hay, needle) {
   for (let i = 0; i + trimmed.length <= hayLines.length; i++) {
     let hit = true;
     for (let j = 0; j < trimmed.length; j++) {
-      if (hayLines[i + j].trim() !== trimmed[j]) { hit = false; break; }
+      if (hayLines[i + j].trim() !== trimmed[j]) {
+        hit = false;
+        break;
+      }
     }
     if (!hit) continue;
     if (found) return null; // ambiguous again
@@ -165,10 +169,17 @@ function parseErrorLocation(diagnostics) {
  */
 function excerpt(source, line, radius = 40) {
   const lines = String(source || '').split('\n');
-  if (!line || line < 1) return lines.slice(0, radius * 2).map(numbered(1)).join('\n');
+  if (!line || line < 1)
+    return lines
+      .slice(0, radius * 2)
+      .map(numbered(1))
+      .join('\n');
   const from = Math.max(0, line - radius);
   const to = Math.min(lines.length, line + radius);
-  return lines.slice(from, to).map(numbered(from + 1)).join('\n');
+  return lines
+    .slice(from, to)
+    .map(numbered(from + 1))
+    .join('\n');
 }
 
 const numbered = (start) => (l, i) => `${String(start + i).padStart(5)}  ${l}`;

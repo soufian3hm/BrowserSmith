@@ -58,7 +58,7 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 function typeChunks(text) {
   const out = [];
-  for (let i = 0; i < text.length; ) {
+  for (let i = 0; i < text.length;) {
     let end = Math.min(i + TYPE_CHUNK, text.length);
     if (end < text.length) {
       const nl = text.lastIndexOf('\n', end - 1);
@@ -268,20 +268,22 @@ function buildMenu() {
 
   const template = [
     ...(isMac
-      ? [{
-          label: PRODUCT.product,
-          submenu: [
-            { label: `About ${PRODUCT.product}`, click: showAbout },
-            { type: 'separator' },
-            { role: 'services' },
-            { type: 'separator' },
-            { role: 'hide' },
-            { role: 'hideOthers' },
-            { role: 'unhide' },
-            { type: 'separator' },
-            { role: 'quit' },
-          ],
-        }]
+      ? [
+          {
+            label: PRODUCT.product,
+            submenu: [
+              { label: `About ${PRODUCT.product}`, click: showAbout },
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' },
+            ],
+          },
+        ]
       : []),
     {
       label: '&File',
@@ -374,7 +376,9 @@ function buildMenu() {
           label: 'Check Toolchain',
           click: () => toRenderer('preflight'),
         },
-        ...(isMac ? [] : [{ type: 'separator' }, { label: `About ${PRODUCT.product}`, click: showAbout }]),
+        ...(isMac
+          ? []
+          : [{ type: 'separator' }, { label: `About ${PRODUCT.product}`, click: showAbout }]),
       ],
     },
   ];
@@ -466,40 +470,46 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => {
     const win = mainWin();
-    if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
   });
 
   // Must happen before app is ready and before any session is touched.
   PROFILE_DIR = sessionStore.pinProfileDir();
 
-  app.whenReady().then(async () => {
-    await sessionStore.assertWritable();
-    sessionStore.watch();
-    guardWebContents();
-    buildMenu();
-    if (process.platform === 'darwin' && app.dock && ICON_PNG) {
-      app.dock.setIcon(nativeImage.createFromPath(ICON_PNG));
-    }
+  app
+    .whenReady()
+    .then(async () => {
+      await sessionStore.assertWritable();
+      sessionStore.watch();
+      guardWebContents();
+      buildMenu();
+      if (process.platform === 'darwin' && app.dock && ICON_PNG) {
+        app.dock.setIcon(nativeImage.createFromPath(ICON_PNG));
+      }
 
-    registerIpc();
+      registerIpc();
 
-    createWindow();
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    });
-  }).catch((err) => {
-    // Installed under Program Files, a read-only folder or a locked OneDrive
-    // path, assertWritable rejects and createWindow is never reached: the user
-    // gets a running process and no window, with nothing explaining why.
-    dialog.showErrorBox(
-      `${PRODUCT.product} cannot start`,
-      `The profile folder is not writable:
+      createWindow();
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      });
+    })
+    .catch((err) => {
+      // Installed under Program Files, a read-only folder or a locked OneDrive
+      // path, assertWritable rejects and createWindow is never reached: the user
+      // gets a running process and no window, with nothing explaining why.
+      dialog.showErrorBox(
+        `${PRODUCT.product} cannot start`,
+        `The profile folder is not writable:
 ${PROFILE_DIR}
 
 ${err && err.message ? err.message : err}`
-    );
-    app.exit(1);
-  });
+      );
+      app.exit(1);
+    });
 }
 
 /* ------------------------------------------------------------------ */
@@ -626,8 +636,12 @@ function registerIpc() {
       port: Number(port) || undefined,
     });
   });
-  ipcMain.handle('tool:serverErrors', (_e, { project }) => toolchain.serverErrors(asProject(project)));
-  ipcMain.handle('tool:staticEntry', (_e, { project }) => toolchain.findStaticEntry(asProject(project)));
+  ipcMain.handle('tool:serverErrors', (_e, { project }) =>
+    toolchain.serverErrors(asProject(project))
+  );
+  ipcMain.handle('tool:staticEntry', (_e, { project }) =>
+    toolchain.findStaticEntry(asProject(project))
+  );
   ipcMain.handle('tool:scaffold', (_e, { project, modeKey }) => {
     const key = String(modeKey ?? '');
     if (!/^[a-z0-9-]{1,32}$/.test(key)) throw new Error('invalid mode: ' + key);

@@ -131,7 +131,7 @@ function resetRun(project, request, modeKey) {
     outcome: 'running',
     internalError: null,
   });
-  renderStatus(); // the clock starts now, not at the first status() call
+  renderStatus(); // the clock starts now, not at the first setPhase() call
 }
 
 const mmss = (ms) => {
@@ -211,7 +211,10 @@ function renderStatus() {
   els.status.classList.toggle('working', !TERMINAL_STATES.includes(run.phase));
 }
 
-function status(s) {
+// NOT named `status`: app.js is a classic script, so a top-level `function
+// status` is a write to the global object, and it replaced window.status - a
+// real (legacy) DOM string property - with this function for the whole session.
+function setPhase(s) {
   run.phase = s;
   renderStatus();
 }
@@ -242,8 +245,7 @@ tool.onOutput(({ cmd, text }) => termLine(`[${cmd}] ${String(text ?? '').replace
 term.onOutput(({ text }) => termLine(text));
 
 /** The project the user-typed terminal runs in: the sidebar slug, or the root. */
-const currentProjectSlug = () =>
-  els.project.value.trim() ? protocol.slug(els.project.value) : '';
+const currentProjectSlug = () => (els.project.value.trim() ? protocol.slug(els.project.value) : '');
 
 els.termInput.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
@@ -337,7 +339,11 @@ function drive(wv, cmd, args = {}, timeoutMs = 200000) {
   // no-op while the app window is in the background, which made popup menus
   // open in only one tab.
   if (['ask', 'selftest', 'listModels', 'selectModel', 'prepare'].includes(cmd)) {
-    try { tabs.focus(wv.getWebContentsId()); } catch { /* not attached yet */ }
+    try {
+      tabs.focus(wv.getWebContentsId());
+    } catch {
+      /* not attached yet */
+    }
   }
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
@@ -349,7 +355,10 @@ function drive(wv, cmd, args = {}, timeoutMs = 200000) {
 }
 
 /** Letters and digits only — survives the composer's markdown auto-formatting. */
-const normalizeForCompare = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const normalizeForCompare = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
 
 /**
  * Send `text` to a tab and return its reply.
@@ -417,7 +426,7 @@ async function ask(wv, text, opts) {
 const ROTATE_AT_CHARS = 12000;
 
 async function rotateIfBloated(tag) {
-  let chars = 0;
+  let chars;
   try {
     chars = await drive(wvOf(tag), 'chars', {}, 8000);
   } catch {
@@ -452,7 +461,12 @@ async function rotateIfBloated(tag) {
     // only trace was one "continuing" line scrolled far up the log. Fail the
     // round instead - the caller reseeds and retries.
     seeded.delete(tag);
-    throw new Error(`${tag.toUpperCase()}: chat rotation failed (${e.message})`);
+    // The wording is load-bearing: buildFile's recovery test and runProject's
+    // log line both match this string, so it is deliberately unchanged. What
+    // `cause` adds is the original Error's stack, which the DevTools console
+    // prints under "Caused by" - the only way back to the failure inside
+    // seedTab from a message written for the user rather than for debugging.
+    throw new Error(`${tag.toUpperCase()}: chat rotation failed (${e.message})`, { cause: e });
   }
 }
 
@@ -529,7 +543,7 @@ const ROLE_OF_TAG = { a: 'planner', b: 'builder', c: 'reviewer', d: 'auditor' };
 async function seedTab(tag) {
   if (seeded.has(tag) || !seededMode) return;
   const contract = protocol.systems(seededMode)[ROLE_OF_TAG[tag]];
-  status(`seeding ${tag.toUpperCase()}`);
+  setPhase(`seeding ${tag.toUpperCase()}`);
   markBusy(tag, true, 'seeding');
   try {
     try {
@@ -565,7 +579,7 @@ async function ensureSeeded(modeKey) {
   // rather than "whatever has focus", so they can run at once. Serially this
   // was 28s of a 113s run - a quarter of the wall clock spent waiting on four
   // things that never needed to wait for each other.
-  status(`seeding ${unseeded.length} tabs`);
+  setPhase(`seeding ${unseeded.length} tabs`);
   // Staggered, not simultaneous: four identical requests landing in the same
   // millisecond looks like a burst and has drawn ERR_ADDRESS_UNREACHABLE.
   // 400ms apart keeps nearly all the parallel win without the thundering herd.
@@ -695,7 +709,7 @@ async function buildFile(project, filePath, request, mode) {
   for (let attempt = 0; attempt < attemptsFor(); attempt++) {
     if (abort) throw new Error('stopped');
 
-    status(`B: building ${filePath} (try ${attempt + 1})`);
+    setPhase(`B: building ${filePath} (try ${attempt + 1})`);
 
     // A slow or stuck reply must cost this attempt, not the whole project -
     // one README timing out used to abandon an otherwise healthy build.
@@ -739,7 +753,7 @@ async function buildFile(project, filePath, request, mode) {
     log(`B returned ${candidate.length} chars`, 'b');
     salvage = candidate;
 
-    status('C: reviewing');
+    setPhase('C: reviewing');
     let verdictReply;
     let reviewed = true;
     try {
@@ -948,7 +962,7 @@ async function runProject(request, opts = {}) {
   // Framework modes start from a real scaffold so the agents only write the
   // files that matter. A resumed run already has one.
   if (mode.scaffold && !opts.resume) {
-    status(`scaffolding ${mode.key}`);
+    setPhase(`scaffolding ${mode.key}`);
     log(`scaffolding ${mode.key} project…`);
     try {
       const r = await tool.scaffold(project, mode.key);
@@ -994,16 +1008,19 @@ async function runProject(request, opts = {}) {
   if (opts.resume) {
     for (const f of opts.resume.written || []) if (!written.includes(f)) written.push(f);
     note = opts.resume.note || null;
-    log(`resuming: ${written.length} file(s) already written${note ? ` — auditor said: ${note}` : ''}`, 'ok');
+    log(
+      `resuming: ${written.length} file(s) already written${note ? ` — auditor said: ${note}` : ''}`,
+      'ok'
+    );
   }
   run.note = note;
 
   let reply;
   if (written.length) {
-    status('planner: next file?');
+    setPhase('planner: next file?');
     reply = await askForPath(protocol.TAGS.next(written, note, await existingFiles(project)));
   } else {
-    status('planner: asking for path');
+    setPhase('planner: asking for path');
     reply = await askForPath(protocol.TAGS.request(request, mode, await existingFiles(project)));
   }
 
@@ -1021,7 +1038,10 @@ async function runProject(request, opts = {}) {
     }
 
     const filePath = reply.path;
-    if (filePath === 'DONE') { log('planner says DONE', 'ok'); break; }
+    if (filePath === 'DONE') {
+      log('planner says DONE', 'ok');
+      break;
+    }
     if (!filePath) {
       // Was a throw, which abandoned the whole run: a nine-file project died
       // because the planner answered file ten in prose, and nothing already
@@ -1048,7 +1068,10 @@ async function runProject(request, opts = {}) {
         log(`planner will not move past ${filePath} — ending the build here`, 'err');
         break;
       }
-      log(`${filePath} has already been written ${seen} times — asking for a different file`, 'err');
+      log(
+        `${filePath} has already been written ${seen} times — asking for a different file`,
+        'err'
+      );
       reply = await askForPath(
         `${filePath} has been written ${seen} times already and will not be written again.\n` +
           `Reply with ONE different relative file path that is still needed, or the single word DONE.`
@@ -1067,7 +1090,7 @@ async function runProject(request, opts = {}) {
         log('two files have now failed to build — finishing with what exists', 'err');
         break;
       }
-      status('planner: next file?');
+      setPhase('planner: next file?');
       reply = await askForPath(
         `${filePath} could not be produced and has been skipped.\n` +
           `Reply with ONE different relative file path that is still needed, or the single word DONE.`
@@ -1083,7 +1106,7 @@ async function runProject(request, opts = {}) {
     // work is genuinely complete rather than merely non-empty.
     note = null;
     let auditDone = false;
-    status('D: auditing');
+    setPhase('D: auditing');
     try {
       const auditReply = await askRole(ROLES.auditor, protocol.TAGS.audit(request, written, mode));
       note = protocol.parseAudit(auditReply);
@@ -1096,7 +1119,7 @@ async function runProject(request, opts = {}) {
     run.note = note;
     if (auditDone) break;
 
-    status('planner: next file?');
+    setPhase('planner: next file?');
     reply = await askForPath(protocol.TAGS.next(written, note, await existingFiles(project)));
   }
 
@@ -1120,13 +1143,15 @@ async function runProject(request, opts = {}) {
 
 /** One line that identifies a failure, so a repeat of it is recognisable. */
 function signatureOf(text) {
-  return String(text || '')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)[0]
-    ?.toLowerCase()
-    .replace(/\d+/g, '#')
-    .slice(0, 120) || 'unknown failure';
+  return (
+    String(text || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)[0]
+      ?.toLowerCase()
+      .replace(/\d+/g, '#')
+      .slice(0, 120) || 'unknown failure'
+  );
 }
 
 /** The remedies for a failing project, weakest and cheapest first. */
@@ -1211,7 +1236,7 @@ async function rewriteForFix(project, request, mode, fix) {
 
 /** Ask the planner which file is really at fault, then rewrite that. */
 async function replanFix(project, request, mode, fix) {
-  status('planner: fixing');
+  setPhase('planner: fixing');
   const safeFix = protocol.condense(scrubPaths(fix), 1200);
   const { path: fixPath } = await askForPath(
     `The project was built and run. It did not pass.\n` +
@@ -1306,7 +1331,9 @@ function reportRun(preview, outcome) {
  */
 function projectRelative(project, file) {
   const marker = `${project}/`;
-  const at = String(file || '').replace(/\\/g, '/').lastIndexOf(marker);
+  const at = String(file || '')
+    .replace(/\\/g, '/')
+    .lastIndexOf(marker);
   return at >= 0 ? file.replace(/\\/g, '/').slice(at + marker.length) : file;
 }
 
@@ -1330,7 +1357,7 @@ async function tryPatch(project, errorText) {
   }
 
   log(`patching ${loc.file}:${loc.line} instead of rewriting it`, 'ok');
-  status(`${ROLES.builder.toUpperCase()}: patching ${loc.file}`);
+  setPhase(`${ROLES.builder.toUpperCase()}: patching ${loc.file}`);
 
   let reply;
   try {
@@ -1385,7 +1412,9 @@ async function tryPatch(project, errorText) {
   logDetail(
     `patch applied to ${loc.file} — ${applied.length} hunk(s)`,
     applied
-      .map((p, i) => `--- hunk ${i + 1} · before\n${p.find}\n--- hunk ${i + 1} · after\n${p.replace}`)
+      .map(
+        (p, i) => `--- hunk ${i + 1} · before\n${p.find}\n--- hunk ${i + 1} · after\n${p.replace}`
+      )
       .join('\n\n'),
     'ok'
   );
@@ -1444,18 +1473,24 @@ async function verifyByPlan(project, request, p) {
 
   for (const step of p.steps || []) {
     if (abort) throw new Error('stopped');
-    status(`${step.cmd} ${step.args.join(' ')}`);
+    setPhase(`${step.cmd} ${step.args.join(' ')}`);
     log(`${step.cmd} ${step.args.join(' ')}…`);
     let res;
     try {
       res = await tool.run(project, step.cmd, step.args, step.timeoutMs || 300000);
     } catch (e) {
-      if (step.optional) { log(`${step.cmd} unavailable (${e.message}) — continuing`, 'err'); continue; }
+      if (step.optional) {
+        log(`${step.cmd} unavailable (${e.message}) — continuing`, 'err');
+        continue;
+      }
       return { ok: false, stage: 'install', detail: e.message };
     }
     if (res.code !== 0) {
       const tail = tailLines(res.out, 20);
-      if (step.optional) { log(`${step.cmd} failed (non-fatal), continuing`, 'err'); continue; }
+      if (step.optional) {
+        log(`${step.cmd} failed (non-fatal), continuing`, 'err');
+        continue;
+      }
       return { ok: false, stage: 'install', detail: `${step.cmd} failed:\n${tail}` };
     }
     log(`${step.cmd} ok`, 'ok');
@@ -1465,7 +1500,7 @@ async function verifyByPlan(project, request, p) {
   let runOutput = '';
 
   if (p.serve) {
-    status(p.serve.label);
+    setPhase(p.serve.label);
     log(`starting: ${p.serve.label}…`);
     try {
       const srv = await tool.serveCmd(project, p.serve.cmd, p.serve.args);
@@ -1477,7 +1512,7 @@ async function verifyByPlan(project, request, p) {
       return { ok: false, stage: 'serve', detail: `${e.message}${errs ? '\n' + errs : ''}` };
     }
   } else if (p.run) {
-    status(p.run.label);
+    setPhase(p.run.label);
     log(`running: ${p.run.label}…`);
     try {
       const res = await tool.run(project, p.run.cmd, p.run.args, p.run.timeoutMs || 120000);
@@ -1570,7 +1605,7 @@ async function serverErrorText(project) {
 async function judgePage(project, request, p, url, runOutput) {
   let shot, verdict;
   try {
-    status('screenshotting');
+    setPhase('screenshotting');
     shot = await tool.screenshot(project, url);
     log(`screenshot ${Math.round(shot.bytes / 1024)}KB — "${shot.title || 'untitled'}"`, 'ok');
     await refreshFiles();
@@ -1582,7 +1617,7 @@ async function judgePage(project, request, p, url, runOutput) {
     if (diagnostics) log(`errors on the page: ${diagnostics.split('\n')[0]}`, 'err');
 
     const drove = (shot.interactions || []).join('; ');
-    status(`${QA.toUpperCase()}: judging the preview`);
+    setPhase(`${QA.toUpperCase()}: judging the preview`);
     verdict = await askWithImage(
       QA,
       // safeLocation, never the raw URL: a file:// preview path carries the
@@ -1609,7 +1644,7 @@ async function judgePage(project, request, p, url, runOutput) {
       url,
       shot: shot.file,
       // The real error beats the model's description of it every time.
-      detail: pass ? null : (diagnostics || detail),
+      detail: pass ? null : diagnostics || detail,
       diagnostics,
     };
   } catch (e) {
@@ -1620,7 +1655,7 @@ async function judgePage(project, request, p, url, runOutput) {
 
 /** No page to look at: judge what the program printed. */
 async function judgeText(project, request, p, output) {
-  status(`${QA.toUpperCase()}: judging the output`);
+  setPhase(`${QA.toUpperCase()}: judging the output`);
   const verdict = await askRole(
     QA,
     `The project was run with: ${p.run ? p.run.label : 'its entry point'}\n` +
@@ -1642,7 +1677,7 @@ async function verifyInBrowser(project, request, mode) {
   if (info.hasPackageJson) {
     log(`package.json found — scripts: ${info.scripts.join(', ') || '(none)'}`, 'ok');
 
-    status('npm install');
+    setPhase('npm install');
     log('running npm install…');
     const install = await tool.run(project, 'npm', ['install'], 420000);
     if (install.code !== 0) {
@@ -1656,7 +1691,7 @@ async function verifyInBrowser(project, request, mode) {
         ? mode.devScript
         : ['dev', 'start', 'serve', 'preview'].find((s) => info.scripts.includes(s));
     if (script) {
-      status(`npm run ${script}`);
+      setPhase(`npm run ${script}`);
       log(`starting dev server: npm run ${script}…`);
       try {
         const srv = await tool.serve(project, script);
@@ -1685,14 +1720,14 @@ async function verifyInBrowser(project, request, mode) {
   // fix loop, not an exception that aborts the whole run.
   let shot, verdict;
   try {
-    status('screenshotting preview');
+    setPhase('screenshotting preview');
     shot = await tool.screenshot(project, url);
     log(`screenshot ${Math.round(shot.bytes / 1024)}KB — "${shot.title || 'untitled'}"`, 'ok');
     await refreshFiles();
 
     // The screenshot is on the clipboard; paste it into the QA tab so the
     // model can actually see what it built, then ask for a verdict.
-    status(`${QA.toUpperCase()}: reviewing the preview`);
+    setPhase(`${QA.toUpperCase()}: reviewing the preview`);
     verdict = await askWithImage(
       QA,
       // safeLocation, never the raw URL - a file:// path leaks the OS username.
@@ -1731,15 +1766,25 @@ async function parsePassFix(verdict) {
       pass,
       fix,
       // Only a real FIX carries a reason; anything else keeps the first line.
-      detail: pass ? null : t.slice(m ? m.index + m[0].length : 0).replace(/^[:\s-]*/, '').split('\n')[0],
+      detail: pass
+        ? null
+        : t
+            .slice(m ? m.index + m[0].length : 0)
+            .replace(/^[:\s-]*/, '')
+            .split('\n')[0],
     };
   };
   let r = read(verdict);
   if (r.pass || r.fix) return r;
   try {
-    const again = await askRole(QA, 'Reply with exactly one word: PASS or FIX (with one line after FIX).');
+    const again = await askRole(
+      QA,
+      'Reply with exactly one word: PASS or FIX (with one line after FIX).'
+    );
     r = read(again);
-  } catch { /* keep the prose reading */ }
+  } catch {
+    /* keep the prose reading */
+  }
   if (!r.pass && !r.fix) r.detail = protocol.clean(verdict).split('\n')[0] || 'unclear verdict';
   return r;
 }
@@ -1748,7 +1793,7 @@ async function parsePassFix(verdict) {
 async function verifyByRunning(project, request, mode) {
   const [cmd, args] = mode.key === 'python' ? ['python', ['main.py']] : ['node', ['index.js']];
 
-  status(`running ${cmd} ${args.join(' ')}`);
+  setPhase(`running ${cmd} ${args.join(' ')}`);
   log(`running ${cmd} ${args.join(' ')}…`);
   let res;
   try {
@@ -1765,7 +1810,7 @@ async function verifyByRunning(project, request, mode) {
   for (const l of tail.split('\n')) log(`  ${l}`);
   termLine(tail);
 
-  status(`${QA.toUpperCase()}: reviewing the output`);
+  setPhase(`${QA.toUpperCase()}: reviewing the output`);
   const verdict = await askRole(
     QA,
     `The project was executed with: ${cmd} ${args.join(' ')} (${exitNote}).\n` +
@@ -1818,7 +1863,7 @@ async function askWithImage(tag, text) {
     // An unreadable baseline must not look like "the image arrived", so a
     // failed read counts as an empty composer.
     const before = (await drive(wv, 'composerText', {}, 8000).catch(() => '')) || '';
-    await tabs.paste(id);                       // the screenshot
+    await tabs.paste(id); // the screenshot
     if (!(await waitForPastedImage(wv, before))) {
       await new Promise((r) => setTimeout(r, PASTE_BLIND_MS));
     }
@@ -1827,7 +1872,12 @@ async function askWithImage(tag, text) {
     const clicked = await drive(wv, 'clickSend', {}, 8000);
     if (!clicked) await tabs.enter(id);
     run.messages++;
-    return await drive(wv, 'awaitReply', { opts: { text, quietMs: 6000, timeoutMs: 600000 } }, 630000);
+    return await drive(
+      wv,
+      'awaitReply',
+      { opts: { text, quietMs: 6000, timeoutMs: 600000 } },
+      630000
+    );
   } finally {
     markBusy(tag, false);
   }
@@ -1886,7 +1936,7 @@ function finishRun(preview, outcome) {
   run.outcome = outcome;
   run.active = false;
   reportRun(preview, outcome);
-  status(outcome);
+  setPhase(outcome);
 }
 
 function startingRun() {
@@ -2010,7 +2060,7 @@ els.stop.addEventListener('click', async () => {
   // the app looked hung for ten minutes.
   els.stop.disabled = true;
   els.stop.textContent = 'Stopping…';
-  status('stopping');
+  setPhase('stopping');
   const cancelled = cancelPending();
   log(`stop requested — cancelled ${cancelled} in-flight tab command(s)`, 'err');
   // Whatever those tabs were generating, they are mid-reply now; the next run
@@ -2027,13 +2077,13 @@ window.addEventListener('unhandledrejection', (e) => {
   const msg = String(e.reason?.message || e.reason || 'unknown error');
   run.internalError = msg;
   log(`internal error (unhandled rejection): ${msg}`, 'err');
-  if (!running && !TERMINAL_STATES.includes(run.phase)) status('idle');
+  if (!running && !TERMINAL_STATES.includes(run.phase)) setPhase('idle');
 });
 
 window.addEventListener('error', (e) => {
   run.internalError = String(e.message || 'script error');
   log(`internal error: ${run.internalError}`, 'err');
-  if (!running && !TERMINAL_STATES.includes(run.phase)) status('idle');
+  if (!running && !TERMINAL_STATES.includes(run.phase)) setPhase('idle');
 });
 
 /* ----------------------------------------------------------------- models */
@@ -2112,7 +2162,10 @@ for (const tag of TAGS_ALL) {
     if (busyWithRun('switching model')) return;
     try {
       const r = await drive(wvOf(tag), 'selectModel', { name: sel.value }, 25000);
-      log(`${tag.toUpperCase()}: model → ${r.selected}${r.alreadyActive ? ' (already)' : ''}`, 'ok');
+      log(
+        `${tag.toUpperCase()}: model → ${r.selected}${r.alreadyActive ? ' (already)' : ''}`,
+        'ok'
+      );
     } catch (e) {
       log(`${tag.toUpperCase()} model select failed: ${e.message}`, 'err');
     }
@@ -2175,7 +2228,7 @@ els.modelAll.addEventListener('change', async () => {
       log(`${tag.toUpperCase()} could not switch: ${e.message}`, 'err');
     }
   }
-  status('idle');
+  setPhase('idle');
 });
 
 /* -------------------------------------------------------------- self test */
@@ -2184,7 +2237,7 @@ els.selftest.addEventListener('click', async () => {
   // It types a marker into all four composers and then clears them: mid-run
   // that wipes the prompt the loop just typed.
   if (busyWithRun('the self-test')) return;
-  status('self-testing');
+  setPhase('self-testing');
   let allPass = true;
   for (const t of TAGS_ALL) {
     const [tag, wv] = [t.toUpperCase(), wvOf(t)];
@@ -2221,7 +2274,10 @@ els.selftest.addEventListener('click', async () => {
       }
 
       const passed = checks.filter((c) => c.pass).length;
-      log(`── TAB ${tag}: ${passed}/${checks.length} checks passed`, passed === checks.length ? 'ok' : 'err');
+      log(
+        `── TAB ${tag}: ${passed}/${checks.length} checks passed`,
+        passed === checks.length ? 'ok' : 'err'
+      );
       for (const c of checks) {
         log(`   ${c.pass ? '✓' : '✗'} ${c.name}: ${c.detail}`, c.pass ? '' : 'err');
         if (!c.pass) allPass = false;
@@ -2231,8 +2287,11 @@ els.selftest.addEventListener('click', async () => {
       log(`TAB ${tag} self-test failed: ${e.message}`, 'err');
     }
   }
-  log(allPass ? 'self-test: all green — safe to Run' : 'self-test: fix the ✗ rows first', allPass ? 'ok' : 'err');
-  status('idle');
+  log(
+    allPass ? 'self-test: all green — safe to Run' : 'self-test: fix the ✗ rows first',
+    allPass ? 'ok' : 'err'
+  );
+  setPhase('idle');
 });
 
 document.querySelectorAll('[data-pick]').forEach((btn) => {
@@ -2329,9 +2388,15 @@ async function pollAutopilot() {
       return;
     }
 
-    if (watchBaseline === null) { watchBaseline = chars; return; }
+    if (watchBaseline === null) {
+      watchBaseline = chars;
+      return;
+    }
     // A shrink means the chat was reset (new chat, reload) - re-baseline.
-    if (chars < watchBaseline) { watchBaseline = chars; return; }
+    if (chars < watchBaseline) {
+      watchBaseline = chars;
+      return;
+    }
     if (chars === watchBaseline) return;
 
     // Something arrived. Let it settle before reading, so we do not grab a
@@ -2392,12 +2457,15 @@ async function runAutopilot(request) {
   // A fresh autopilot request gets its own folder; reusing the previous slug
   // would pollute the new project with the old one's files.
   els.project.value = protocol.slug(request);
-  status('autopilot: starting in 3s — press Stop to cancel');
-  log(`autopilot: building "${request.replace(/\n/g, ' ').slice(0, 80)}" — Stop within 3s to cancel`, 'ok');
+  setPhase('autopilot: starting in 3s — press Stop to cancel');
+  log(
+    `autopilot: building "${request.replace(/\n/g, ' ').slice(0, 80)}" — Stop within 3s to cancel`,
+    'ok'
+  );
   for (let i = 0; i < AUTOPILOT_GRACE_MS / 250 && !abort; i++) await sleep(250);
   if (abort) {
     log('autopilot: cancelled before it started', 'err');
-    status('idle');
+    setPhase('idle');
     await endingRun();
     return;
   }

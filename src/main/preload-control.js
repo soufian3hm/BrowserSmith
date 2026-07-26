@@ -23,21 +23,17 @@ if (!fs.existsSync(path.join(__dirname, webviewPreload))) {
 
 const api = {
   site: SITE,
-  preloadPath:
-    'file://' + path.join(__dirname, webviewPreload).replace(/\\/g, '/'),
+  preloadPath: 'file://' + path.join(__dirname, webviewPreload).replace(/\\/g, '/'),
   partition: SITE.partition,
 
   protocol: {
     MODES: protocol.MODES,
     systems: (modeKey) => protocol.systems(modeKey),
     TAGS: {
-      request: (text, mode, existingFiles) =>
-        protocol.TAGS.request(text, mode, existingFiles),
-      build: (p, text, mode, existingFiles) =>
-        protocol.TAGS.build(p, text, mode, existingFiles),
+      request: (text, mode, existingFiles) => protocol.TAGS.request(text, mode, existingFiles),
+      build: (p, text, mode, existingFiles) => protocol.TAGS.build(p, text, mode, existingFiles),
       review: (p, body) => protocol.TAGS.review(p, body),
-      next: (written, note, existingFiles) =>
-        protocol.TAGS.next(written, note, existingFiles),
+      next: (written, note, existingFiles) => protocol.TAGS.next(written, note, existingFiles),
       audit: (request, written, mode) => protocol.TAGS.audit(request, written, mode),
     },
     parsePath: (reply) => protocol.parsePath(reply),
@@ -53,8 +49,7 @@ const api = {
   },
 
   fs: {
-    write: (relPath, content) =>
-      ipcRenderer.invoke('fs:write', { path: relPath, content }),
+    write: (relPath, content) => ipcRenderer.invoke('fs:write', { path: relPath, content }),
     read: (relPath) => ipcRenderer.invoke('fs:read', { path: relPath }),
     list: () => ipcRenderer.invoke('fs:list'),
     root: () => ipcRenderer.invoke('fs:root'),
@@ -79,16 +74,13 @@ const api = {
       ipcRenderer.invoke('tool:run', { project, cmd, args, timeoutMs }),
     serve: (project, script) => ipcRenderer.invoke('tool:serve', { project, script }),
     stop: (project) => ipcRenderer.invoke('tool:stop', { project }),
-    screenshot: (project, url) =>
-      ipcRenderer.invoke('tool:screenshot', { project, url }),
+    screenshot: (project, url) => ipcRenderer.invoke('tool:screenshot', { project, url }),
     inspect: (project) => ipcRenderer.invoke('tool:inspect', { project }),
     staticEntry: (project) => ipcRenderer.invoke('tool:staticEntry', { project }),
     plan: (project) => ipcRenderer.invoke('tool:plan', { project }),
-    serveCmd: (project, cmd, args) =>
-      ipcRenderer.invoke('tool:serveCmd', { project, cmd, args }),
+    serveCmd: (project, cmd, args) => ipcRenderer.invoke('tool:serveCmd', { project, cmd, args }),
     serverErrors: (project) => ipcRenderer.invoke('tool:serverErrors', { project }),
-    scaffold: (project, modeKey) =>
-      ipcRenderer.invoke('tool:scaffold', { project, modeKey }),
+    scaffold: (project, modeKey) => ipcRenderer.invoke('tool:scaffold', { project, modeKey }),
     onOutput: (cb) => ipcRenderer.on('tool:output', (_e, p) => cb(p)),
   },
 
