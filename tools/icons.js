@@ -11,8 +11,34 @@
  */
 const path = require('node:path');
 const fs = require('node:fs');
-const sharp = require('sharp');
-const toIcoModule = require('png-to-ico');
+
+/**
+ * Maintainer-only tooling: sharp and png-to-ico are NOT declared dependencies.
+ * The generated icons are committed, so a stranger cloning this repo never needs
+ * them - declaring them would add tens of MB of platform natives to every first
+ * install for a step nobody but the maintainer runs.
+ */
+function requireOrExplain(name) {
+  try {
+    return require(name);
+  } catch {
+    console.error(
+      [
+        `${name} is not installed.`,
+        'This script is maintainer tooling and its dependencies are deliberately',
+        'not in package.json - the generated assets are committed, so nobody',
+        'cloning the repo needs them. Install them on demand:',
+        '',
+        '  npm i --no-save sharp png-to-ico',
+        '',
+      ].join('\n')
+    );
+    process.exit(1);
+  }
+}
+
+const sharp = requireOrExplain('sharp');
+const toIcoModule = requireOrExplain('png-to-ico');
 const toIco = toIcoModule.default || toIcoModule;
 
 const ASSETS = path.join(__dirname, '..', 'assets');

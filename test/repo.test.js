@@ -193,3 +193,33 @@ test('nothing in the shipped tree still says notioned', () => {
   for (const dir of ['src', 'tools', 'test']) walk(path.join(ROOT, dir));
   assert.deepEqual(seen, [], `the abandoned project name survives in: ${seen.join(', ')}`);
 });
+
+test('every local asset the renderer loads is actually packaged', () => {
+  // A relative src that resolves in dev can still be absent from the shipped
+  // build: electron-builder's `files` is an allow-list, and assets/png was left
+  // out once, which would have shown a broken image in the app bar of every
+  // installed copy. Check both halves of that seam.
+  const html = readRoot('src/renderer/index.html');
+  const yml = readRoot('electron-builder.yml');
+
+  const refs = [...html.matchAll(/(?:src|href)="((?!https?:|data:|#)[^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((r) => r.startsWith('../'));
+
+  assert.ok(refs.length > 0, 'expected the renderer to load at least one local asset');
+
+  for (const ref of refs) {
+    const onDisk = path.resolve(ROOT, 'src', 'renderer', ref);
+    assert.ok(fs.existsSync(onDisk), `${ref} does not exist on disk`);
+
+    // The path as electron-builder sees it, e.g. assets/png/logo-128.png
+    const rel = path.relative(ROOT, onDisk).split(path.sep).join('/');
+    const dir = rel.slice(0, rel.lastIndexOf('/'));
+    const covered =
+      yml.includes(`- ${rel}`) ||
+      yml.includes(`- ${dir}/*.png`) ||
+      yml.includes(`- ${dir}/**`) ||
+      yml.includes(`- ${dir}/**/*`);
+    assert.ok(covered, `${rel} is loaded by index.html but not in electron-builder files`);
+  }
+});

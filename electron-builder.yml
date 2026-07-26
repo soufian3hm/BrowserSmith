@@ -34,6 +34,9 @@ files:
   - src/**/*.css
   - assets/logo.ico
   - assets/license.txt
+  # The renderer's app bar loads the logo by relative path, so the PNG set
+  # must ship or the header renders as a broken image in the installed app.
+  - assets/png/*.png
   - assets/logo-512.png
   - "!.profile"
   - "!.profile/**"
