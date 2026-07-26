@@ -64,6 +64,216 @@ test('unfence strips exactly one code fence', () => {
   assert.ok(p.unfence('```md\n# hi\n```js\nx\n```\n```').includes('```js'));
 });
 
+/* ---------------------------------------------------------- extractBody */
+
+test('extractBody (a): one fence wrapping the whole reply', () => {
+  assert.equal(
+    p.extractBody('```html\n<!DOCTYPE html>\n<h1>hi</h1>\n```', 'index.html'),
+    '<!DOCTYPE html>\n<h1>hi</h1>\n'
+  );
+  assert.equal(p.extractBody('```\nplain\n```', 'a.txt'), 'plain\n');
+  // A markdown file keeps its inner fences: there they are real content.
+  assert.ok(p.extractBody('```md\n# Title\n\n```js\nx\n```\n```', 'README.md').includes('```js'));
+});
+
+test('extractBody (b): one file split across several fences is rejoined in order', () => {
+  const reply =
+    'Part 1:\n```html\n<!DOCTYPE html>\n<body>\n```\n' +
+    'Part 2:\n```html\n<script>let x = 1</script>\n</body>\n```';
+  assert.equal(
+    p.extractBody(reply, 'index.html'),
+    '<!DOCTYPE html>\n<body>\n<script>let x = 1</script>\n</body>\n'
+  );
+  // No fence markers may survive inside a non-markdown body.
+  assert.ok(!p.extractBody(reply, 'index.html').includes('```'));
+});
+
+test('extractBody (c): prose around the fence is dropped', () => {
+  const reply =
+    "Sure! Here's the file you asked for:\n\n```js\nconst x = 1;\n```\n\nLet me know if you want more.";
+  assert.equal(p.extractBody(reply, 'a.js'), 'const x = 1;\n');
+
+  // An install snippet beside the real block must not be pasted into the file.
+  const withSidecar =
+    'First run:\n```bash\nnpm i\n```\nThen the file:\n```json\n{\n  "name": "x"\n}\n```';
+  assert.equal(p.extractBody(withSidecar, 'package.json'), '{\n  "name": "x"\n}\n');
+
+  // A stream cut off before the closing fence still yields what arrived.
+  assert.equal(p.extractBody('```js\nconst x = 1;\nconst y =', 'a.js'), 'const x = 1;\nconst y =\n');
+
+  // A fence carrying metadata is still a fence, not a line of the file.
+  assert.equal(
+    p.extractBody('Here:\n```jsx title="App.jsx"\nexport default App;\n```', 'App.jsx'),
+    'export default App;\n'
+  );
+});
+
+test('extractBody (d): no fences at all - salvage the code out of the prose', () => {
+  const reply =
+    'Sure! Here is index.html:\n' +
+    '<!DOCTYPE html>\n<html>\n<body>hi</body>\n</html>\n' +
+    'This creates a page with a body.\n' +
+    'Let me know if you want styling.';
+  assert.equal(p.extractBody(reply, 'index.html'), '<!DOCTYPE html>\n<html>\n<body>hi</body>\n</html>\n');
+
+  assert.equal(
+    p.extractBody('Here you go:\nimport os\n\ndef main():\n    print("hi")', 'main.py'),
+    'import os\n\ndef main():\n    print("hi")\n'
+  );
+  assert.equal(
+    p.extractBody('The package manifest:\n{\n  "name": "x"\n}\nHope this helps!', 'package.json'),
+    '{\n  "name": "x"\n}\n'
+  );
+  assert.equal(
+    p.extractBody('Here it is.\nbody { margin: 0; }\n.card { padding: 8px; }\nThis creates a card.', 'style.css'),
+    'body { margin: 0; }\n.card { padding: 8px; }\n'
+  );
+  // A module docstring and a bare assignment are file content, not commentary.
+  assert.equal(
+    p.extractBody('Sure:\n"""Game of life."""\nimport sys\nprint(1)', 'main.py'),
+    '"""Game of life."""\nimport sys\nprint(1)\n'
+  );
+  assert.equal(p.extractBody('Sure:\nPORT = 8080\nprint(PORT)', 'conf.py'), 'PORT = 8080\nprint(PORT)\n');
+});
+
+test('extractBody never returns prose, so the caller can retry', () => {
+  assert.equal(p.extractBody('I am not sure which file you mean.', 'a.js'), '');
+  assert.equal(p.extractBody('', 'a.js'), '');
+  assert.equal(p.extractBody(null, 'a.js'), '');
+  assert.equal(p.extractBody('```\n\n```', 'a.js'), '');
+  // Streaming placeholders alone are not a file either.
+  assert.equal(p.extractBody('Thinking...\nGenerating', 'a.js'), '');
+});
+
+/* --------------------------------------------------------- rejectReason */
+
+test('rejectReason still catches the cases that mean "ask again"', () => {
+  assert.equal(p.rejectReason(''), 'empty');
+  assert.equal(p.rejectReason('ok'), 'too short to be a file');
+  assert.ok(p.rejectReason('Output only the complete contents of index.html'));
+  assert.ok(p.rejectReason('PATH: a.js\nREQUEST: make a thing\nsome more text'));
+  assert.ok(p.rejectReason('REVIEW\nPATH: a.js\nCONTENT: whatever goes here'));
+  assert.ok(/unclosed <script>/.test(p.rejectReason('<html><body><script>\nvar a = 1;')));
+  assert.ok(/unclosed <style>/.test(p.rejectReason('<html><head><style>\nbody { color: red; }')));
+  assert.ok(/unclosed <html>/.test(p.rejectReason('<html>\n<body>a paragraph of text</body>')));
+});
+
+test('rejectReason flags only unmistakable truncation', () => {
+  assert.ok(/inside a string/.test(p.rejectReason('const a = 1;\nconst msg = "you crashed into')));
+  // Ending on an open construct, but only once the file is big enough to be
+  // a real attempt rather than a deliberate stub.
+  assert.ok(p.rejectReason('x'.repeat(2100) + '\nfunction go() {'));
+  assert.equal(p.rejectReason('function go() {'), null);
+});
+
+test('rejectReason accepts valid files that the old brace count rejected', () => {
+  const jsx = `"use client";
+import { useState } from "react";
+
+const css = \`
+  .card { color: red;
+  .card:hover { color: blue;
+\`;
+
+export default function Card({ title }) {
+  const [n, setN] = useState(0);
+  const open = "{";
+  const re = /\\{\\{\\s*/g;
+  const label = "it's fine";
+  return (
+    <div className="card" onClick={() => setN(n + 1)}>
+      <h1>{title} {n} {label} {open} {String(re)}</h1>
+    </div>
+  );
+}
+`;
+  assert.equal(p.rejectReason(jsx), null, 'JSX + template literals must survive review');
+  // Deliberately unbalanced braces, all of them inside strings or regexes.
+  assert.ok((jsx.match(/\{/g) || []).length - (jsx.match(/\}/g) || []).length > 2);
+
+  // An HTML file whose <script> closes only at the very end is complete.
+  const html =
+    '<!DOCTYPE html>\n<html>\n<head><style>body { margin: 0 }</style></head>\n' +
+    '<body>\n<script>\nconst tag = "</scr" + "ipt>";\nconst brace = "{";\n</script>\n</body>\n</html>\n';
+  assert.equal(p.rejectReason(html), null);
+
+  // Python: a file ending on a docstring delimiter is not an open string.
+  assert.equal(p.rejectReason('def f():\n    """\n    Does a thing.\n    """'), null);
+  // Nor is an apostrophe in a trailing comment.
+  assert.equal(p.rejectReason("const a = 1;\n// don't touch this"), null);
+});
+
+/* ------------------------------------------------------------ inferMode */
+
+test('inferMode reads the stack out of the request text', () => {
+  assert.equal(p.inferMode('build me a next js app'), 'nextjs');
+  assert.equal(p.inferMode('hill climb racing in Next.js'), 'nextjs');
+  assert.equal(p.inferMode('use the app router'), 'nextjs');
+  assert.equal(p.inferMode('a vite project'), 'vite');
+  assert.equal(p.inferMode('make a react app for notes'), 'vite');
+  assert.equal(p.inferMode('a python flask api'), 'python');
+  assert.equal(p.inferMode('write main.py for me'), 'python');
+  assert.equal(p.inferMode('a cli that renames files'), 'node');
+  assert.equal(p.inferMode('node script to parse logs'), 'node');
+  assert.equal(p.inferMode('a single html landing page'), 'static');
+
+  // Tie-breaks: something to look at is static, anything else is node.
+  assert.equal(p.inferMode('hill climb racing game'), 'static');
+  assert.equal(p.inferMode('a dashboard showing sales'), 'static');
+  assert.equal(p.inferMode('rename every file in a folder'), 'node');
+  assert.equal(p.inferMode(''), 'node');
+
+  // Whatever it returns must be a real mode, and never auto.
+  for (const req of ['x', 'a game', 'next js', 'flask', '', null]) {
+    const key = p.inferMode(req);
+    assert.ok(p.MODES[key], `inferMode returned an unknown mode: ${key}`);
+    assert.notEqual(key, 'auto');
+  }
+});
+
+/* ------------------------------------------------------------- condense */
+
+test('condense keeps a head and a tail with a visible elision marker', () => {
+  const body = 'H'.repeat(30000) + 'T'.repeat(30000);
+  const out = p.condense(body);
+  assert.ok(out.length < 4200, `condensed to ${out.length} chars`);
+  assert.ok(out.startsWith('H'.repeat(100)), 'head preserved');
+  assert.ok(out.endsWith('T'.repeat(100)), 'tail preserved');
+  assert.ok(/\.\.\. \d+ characters elided \.\.\./.test(out), 'elision marker present');
+  const elided = Number(out.match(/\.\.\. (\d+) characters elided/)[1]);
+  assert.equal(elided, body.length - 2500 - 1500);
+  assert.ok(out.split('H').length - 1 >= 2400, 'about 2500 head chars survive');
+
+  // Small bodies pass straight through, untouched.
+  assert.equal(p.condense('const x = 1;'), 'const x = 1;');
+  assert.equal(p.condense(''), '');
+  assert.equal(p.condense(null), '');
+  assert.equal(p.condense('x'.repeat(4000)).length, 4000);
+  assert.ok(p.condense('x'.repeat(600), 200).length < 300);
+});
+
+test('the reviewer prompt is bounded no matter how big the file is', () => {
+  // A 51KB body pasted into a composer wedged the tab and the reviewer was
+  // skipped, so the review tag must condense on its own.
+  const huge = 'z'.repeat(51822);
+  const prompt = p.TAGS.review('index.html', huge);
+  assert.ok(prompt.length < 5000, `review prompt was ${prompt.length} chars`);
+  assert.ok(prompt.includes('characters elided'));
+  assert.ok(/PRINT/.test(prompt) && /RETRY/.test(prompt));
+  assert.ok(prompt.includes('index.html'));
+});
+
+test('the builder prompt demands one single fenced block', () => {
+  for (const key of MODE_KEYS) {
+    const b = p.systems(key).builder;
+    assert.ok(/ONE single fenced code block/i.test(b), `${key}: no single-block rule`);
+    assert.ok(/never split/i.test(b), `${key}: no anti-split rule`);
+    assert.ok(/nothing outside that block/i.test(b), `${key}: prose is not forbidden`);
+  }
+  // The reviewer must know the elision marker is ours, not a truncated file.
+  assert.ok(/characters elided/.test(p.systems('static').reviewer));
+});
+
 test('slug makes a safe single directory segment', () => {
   assert.equal(p.slug('My Cool Tool'), 'my-cool-tool');
   assert.equal(p.slug('../../etc/passwd'), 'etc-passwd');

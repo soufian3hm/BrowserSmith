@@ -6,8 +6,11 @@
  * Tab A ("planner")  -> receives the request plus the existing-files list and
  *                       answers with ONE line: the next file path, or DONE.
  * Tab B ("builder")  -> receives the path + request and answers with the file
- *                       body (usually fenced code).
- * Tab C ("reviewer") -> receives path + body, answers exactly PRINT or RETRY.
+ *                       body in one fenced block; extractBody() salvages the
+ *                       body from whatever shape actually comes back.
+ * Tab C ("reviewer") -> receives path + a CONDENSED body, answers exactly
+ *                       PRINT or RETRY - it only ever needs one word back, so
+ *                       it never gets the whole file (see condense).
  * Tab D ("auditor")  -> receives request + files written, answers with the one
  *                       most important missing piece, or DONE.
  *
@@ -151,6 +154,34 @@ const EXAMPLE_PATH = {
   python: 'game.py',
 };
 
+/* -------------------------------------------------------------- auto mode */
+
+/**
+ * Anything that has to be LOOKED at rather than run in a terminal. Used only
+ * as the tie-breaker after every explicit stack signal has missed.
+ */
+const VISUAL_ASK =
+  /\b(game|arcade|platformer|racing|racer|puzzle|clone|animation|animate[ds]?|canvas|webgl|three\.?js|3d|svg|ui|interface|page|webpage|website|web ?app|site|landing|portfolio|dashboard|chart|graph|visuali[sz]\w*|simulator|editor|drawing|paint|gallery|slider|carousel|clock|timer|calculator|todo|quiz|player|map|form)\b/i;
+
+/**
+ * Guess a concrete MODES key from the raw request text, for when the user
+ * leaves the mode on Auto.
+ *
+ * A live run answered "a next js app" with index.html + package.json and the
+ * auditor rightly rejected it, so the stack signals are checked before the
+ * visual/terminal tie-break. "next js" is written with a space at least as
+ * often as "next.js", hence the loose separator.
+ */
+function inferMode(requestText) {
+  const t = String(requestText || '');
+  if (/next[\s._-]?js\b|app router/i.test(t)) return 'nextjs';
+  if (/\bvite\b|\breact\s+(app|spa|project|site)\b/i.test(t)) return 'vite';
+  if (/\bpython\b|\bflask\b|\bdjango\b|\bpygame\b|\.py\b/i.test(t)) return 'python';
+  if (/\bcli\b|node script|command[- ]line|\bterminal\b/i.test(t)) return 'node';
+  if (/\bstatic\b|landing page|single html|one file|single file/i.test(t)) return 'static';
+  return VISUAL_ASK.test(t) ? 'static' : 'node';
+}
+
 /* ---------------------------------------------------------- role prompts */
 
 /** The four role prompts (planner/builder/reviewer/auditor) for a mode. */
@@ -180,7 +211,7 @@ function systems(modeKey) {
 ${conv}
 Rules you must never break:
 1. Reply INSTANTLY with ONE line only. No thinking out loud, no tools, no browsing, no markdown, no backticks, no prose. You never write file contents yourself.
-2. To a REQUEST or a WRITTEN SO FAR block, answer with exactly one relative file path (e.g. ${example}) - the single most useful file to write next - or the single word DONE when nothing more is needed.
+2. To a REQUEST or a WRITTEN SO FAR block, answer with exactly one relative file path (e.g. ${example}) - the single most useful file to write next - or the single word DONE when nothing more is needed. The whole answer is that one token: no "Next file:", no bullet, no period, no quotes, no code fence.
 3. Place files using the EXISTING FILES list: extend the structure that is already there and keep every import resolvable. Naming a file that already exists means its contents get REPLACED, so only name one when you mean to rewrite it.
 4. ${scaffoldRule}
 5. To a REVIEW block, answer with EXACTLY ONE WORD: PRINT if the content is a valid, complete file for that path, otherwise RETRY.
@@ -189,28 +220,55 @@ Rules you must never break:
   const builder = `You are the BUILDER in a four-agent loop that writes a real project into a workspace folder.
 ${conv}
 Rules you must never break:
-1. You get a PATH, the REQUEST and the EXISTING FILES list. Output ONLY the complete contents of that one file - nothing before it, nothing after it. A single fenced code block around the file is allowed.
-2. The file must be complete top to bottom: "...", "rest unchanged", "add more here" and TODO stubs for core behavior are all forbidden.
-3. Every import and reference must resolve: import only from the platform itself, from files on the EXISTING FILES list, or from the file being written. Never import a package or file that does not exist.
-4. ${qualityRule}
-5. Match the language to the file extension and keep the file ready to drop straight onto disk.`;
+1. You get a PATH, the REQUEST and the EXISTING FILES list. Answer with the complete contents of that ONE file inside ONE single fenced code block: \`\`\` on its own line, the whole file, \`\`\` on its own line.
+2. Nothing outside that block. No greeting, no explanation, no headings, no "Here is", no notes after it. The block is the entire message.
+3. Never split the file across two or more code blocks - one file, one block, even when it is long. Never reopen a fence to continue.
+4. The file must be complete top to bottom: "...", "rest of the code unchanged", "add more here" and TODO stubs for core behavior are all forbidden. If it is long, write it out in full anyway.
+5. Every import and reference must resolve: import only from the platform itself, from files on the EXISTING FILES list, or from the file being written. Never import a package or file that does not exist.
+6. ${qualityRule}
+7. Match the language to the file extension and keep the file ready to drop straight onto disk.`;
 
   const reviewer = `You are the REVIEWER in a four-agent loop building a real project.
 ${conv}
 Rules you must never break:
 1. You get a PATH and its proposed CONTENT. Judge that one file only: is it complete and correct for this path in this kind of project?
-2. RETRY when it is truncated or elided ("..."), echoes the prompt back, is the wrong language for the extension, or imports files or packages that cannot exist here. PRINT when a competent teammate would commit it as-is.
-3. Reply with EXACTLY ONE WORD: PRINT or RETRY. No tools, no rewriting, no explanation.`;
+2. Long files arrive shortened: a middle section is replaced by a marker reading "... N characters elided ...". That marker is OUR doing, never the author's - judge the head and tail you can see and treat the middle as fine.
+3. RETRY when the file itself is cut off mid-token, is abbreviated by its author ("rest unchanged", "// ...", TODO stubs for core behavior), echoes the prompt back, is the wrong language for the extension, or imports files or packages that cannot exist here. PRINT when a competent teammate would commit it as-is.
+4. Your ENTIRE reply is one word: PRINT or RETRY. No tools, no rewriting, no reasons, no punctuation, no code fence. Anything longer is a failure.`;
 
   const auditor = `You are the AUDITOR in a four-agent loop building a real project.
 Definition of done: ${done}.
 Rules you must never break:
 1. You get the project REQUEST and the FILES WRITTEN list. Compare them against the request and nothing else.
-2. If something essential is missing, reply with ONE short line naming the single most important missing piece (e.g. "index.html links style.css but it was never written").
-3. If the files already satisfy the request, reply with the single word DONE. Do not invent extras - no bonus pages, no tests, no polish beyond the request. A small working app beats a long file list.
-4. No tools, no files, no code. One line maximum.`;
+2. If something essential is missing, reply with ONE short line naming the single most important missing piece (e.g. "index.html links style.css but it was never written"). One line, under 20 words, no list, no preamble, no markdown.
+3. If the files already satisfy the request, your entire reply is the single word DONE. Do not invent extras - no bonus pages, no tests, no polish beyond the request. A small working app beats a long file list.
+4. No tools, no files, no code. One line maximum, always.`;
 
   return { planner, builder, reviewer, auditor };
+}
+
+/* -------------------------------------------------------- payload budget */
+
+/**
+ * Shrink a file body to head + tail so a prompt never carries the whole file.
+ *
+ * Typing tens of thousands of characters into a ProseMirror composer takes
+ * long enough that the tab looks hung and the round is abandoned. The head
+ * carries imports/structure and the tail shows whether the file actually
+ * finishes, which is all a one-word verdict needs.
+ */
+function condense(body, max = 4000) {
+  const t = String(body || '');
+  if (!(max > 0)) return '';
+  if (t.length <= max) return t;
+  const head = Math.max(1, Math.round(max * 0.625)); // ~2500 of the default 4000
+  const tail = Math.max(0, max - head); // ~1500
+  const elided = t.length - head - tail;
+  return (
+    t.slice(0, head) +
+    `\n\n... ${elided} characters elided ...\n\n` +
+    (tail ? t.slice(t.length - tail) : '')
+  );
 }
 
 /* ------------------------------------------------------------------ tags */
@@ -241,9 +299,15 @@ const TAGS = {
     `Reply with ONE line: the relative path of the next file to write. Nothing else.`,
   build: (path, text, mode, existingFiles) =>
     `PATH: ${path}\nREQUEST: ${text}\n${modeLine(mode)}\nEXISTING FILES:\n${renderFiles(existingFiles)}\n\n` +
-    `Output only the complete contents of ${path}.`,
+    // The leading phrase is also how rejectReason spots the prompt echoed
+    // back as a "file", so it has to stay word for word.
+    `Output only the complete contents of ${path} - in ONE fenced code block, ` +
+      `nothing before it, nothing after it, never split across blocks.`,
+  // condense() here and not at the call site: a 51KB body typed into the
+  // composer wedged the tab, prepare/composerText timed out and the run
+  // silently skipped review. The reviewer only ever answers one word.
   review: (path, body) =>
-    `REVIEW\nPATH: ${path}\nCONTENT:\n${body}\n\nReply with exactly one word: PRINT or RETRY.`,
+    `REVIEW\nPATH: ${path}\nCONTENT:\n${condense(body)}\n\nReply with exactly one word: PRINT or RETRY.`,
   next: (written, note, existingFiles) =>
     `WRITTEN SO FAR:\n${renderFiles(written)}\n` +
     (note ? `AUDITOR SAYS: ${note}\n` : '') +
@@ -347,13 +411,160 @@ function stripStrayFences(body, filePath = '') {
   if (/\.(md|markdown|mdx)$/i.test(filePath)) return body;
   return String(body || '')
     .split('\n')
-    .filter((l) => !/^\s*```[\w+-]*\s*$/.test(l))
+    .filter((l) => !/^\s*```[\w+#.-]*(\s[^`]*)?$/.test(l))
     .join('\n');
 }
 
+/* --------------------------------------------------------- body recovery */
+
 /**
- * Reject a "file" that is really our own prompt echoed back, or a placeholder.
- * Returns a reason string, or null when the content looks like a real file.
+ * A markdown fence line: ```lang to open, bare ``` to close. The trailing
+ * slack is for the metadata some renderers add, e.g. ```jsx title="App.jsx".
+ */
+const FENCE_LINE = /^\s*```+\s*([\w+#.-]*)\s*[^`]*$/;
+
+/**
+ * Blocks the builder emits AROUND the file rather than as part of it -
+ * install commands, sample output, a diff. Dropped only when a real block
+ * survives, so a single ```bash file still comes through.
+ */
+const SIDECAR_LANG = /^(bash|sh|shell|zsh|console|cmd|powershell|ps1|text|plaintext|output|log|diff)$/;
+
+/** The first line that could plausibly BE a file rather than talk about one. */
+const FILE_START = [
+  /^#/, // shebang, #include, a python comment, a markdown heading
+  /^<!doctype/i,
+  /^<!--/,
+  /^<\?/,
+  /^<\/?[a-z][\w:-]*(?:[\s>/]|$)/i,
+  /^(?:import|export|const|var|function|class|async|await|def|return|require\(|module\.exports)\b/,
+  /^let\s+[\w$]+\s*[=:;]/,
+  /^from\s+[\w.]+\s+import\b/,
+  /^(?:package|@import|@media|@tailwind|@keyframes|:root|\/\*|\/\/)/,
+  /^['"]{3}/, // a python module docstring
+  /^['"]use (strict|client)['"]/,
+  /^if\s+__name__/,
+  /^[{[]/, // JSON, and package.json in particular
+  /^[\w$.]+\s*=\s*\S/, // PORT = 8080, module.exports = ...
+  /^[.#]?[\w-]+(?:[.#:][\w-]+)*(?:\s*[,>+~]\s*[.#]?[\w-]+)*\s*\{/, // a CSS rule
+];
+
+/** Sign-off prose models tack on after the code. */
+const CHATTER_LINE =
+  /^(let me know|this (creates|gives|makes|adds|will|is|does|implements|produces|renders)|would you like|hope (this|that)|feel free|you can (now|then|also)|note that|if you (want|need|'d like)|next steps?\b|to run\b|enjoy\b|that'?s it\b|i (can|could|hope|added|used|kept|left)|the (file|code) above)/i;
+
+/** Collect every fenced block in order, tolerating a fence left unclosed. */
+function fencedBlocks(text) {
+  const out = [];
+  let lines = null;
+  let lang = '';
+  for (const line of String(text).split('\n')) {
+    const fence = line.match(FENCE_LINE);
+    if (lines === null) {
+      if (fence) {
+        lines = [];
+        lang = (fence[1] || '').toLowerCase();
+      }
+      continue; // prose between blocks
+    }
+    if (fence) {
+      out.push({ lang, body: lines.join('\n') });
+      lines = null;
+      lang = '';
+      continue;
+    }
+    lines.push(line);
+  }
+  // A stream cut mid-block still has content worth judging - rejectReason
+  // decides whether it is salvageable, not this scanner.
+  if (lines && lines.length) out.push({ lang, body: lines.join('\n') });
+  return out.filter((b) => b.body.trim());
+}
+
+/** Cut prose off both ends of an unfenced reply, keeping the code between. */
+function salvageUnfenced(text) {
+  const lines = String(text).split('\n');
+  const start = lines.findIndex((l) => {
+    const s = l.trim();
+    return s.length > 0 && FILE_START.some((re) => re.test(s));
+  });
+  if (start < 0) return ''; // prose only - better to retry than to write talk to disk
+  const kept = lines.slice(start);
+  while (kept.length) {
+    const last = kept[kept.length - 1].trim();
+    // Trailing code lines end in punctuation; a sign-off ends in a word or a
+    // full stop, so only strip when both the phrasing and the shape say prose.
+    if (!last || (CHATTER_LINE.test(last) && !/[;,{}()[\]>]$/.test(last))) kept.pop();
+    else break;
+  }
+  return kept.join('\n');
+}
+
+/**
+ * Derive a file body from whatever the builder actually replied.
+ *
+ * The prompt asks for one fenced block, but live runs produce all four of:
+ * one clean fence, one file split across several fences, fences wrapped in
+ * prose, and no fences at all with the code buried in commentary. Returns ''
+ * when nothing file-shaped survives so the caller retries instead of writing
+ * an apology to disk.
+ */
+function extractBody(reply, filePath = '') {
+  const text = clean(reply);
+  if (!text) return '';
+
+  let body;
+  const whole = text.match(/^```[^\n]*\n([\s\S]*?)\n?```$/);
+  if (whole) {
+    // One fence around everything: inner fences are real content (README.md).
+    body = whole[1];
+  } else {
+    let blocks = fencedBlocks(text);
+    if (blocks.length > 1) {
+      const real = blocks.filter((b) => !SIDECAR_LANG.test(b.lang));
+      if (real.length) blocks = real;
+    }
+    body = blocks.length
+      ? blocks.map((b) => b.body).join('\n')
+      : salvageUnfenced(text);
+  }
+
+  body = stripStrayFences(body, filePath).replace(/^\n+/, '').replace(/\s+$/, '');
+  return body.trim() ? body + '\n' : '';
+}
+
+/* --------------------------------------------------------------- vetting */
+
+/**
+ * Does the last line stop inside an open string? Scans with string state so an
+ * apostrophe inside "it's" cannot be mistaken for an opening quote.
+ */
+function endsInsideString(line) {
+  const s = line.replace(/"""|'''/g, ''); // python docstring delimiters
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+    } else if (c === '/' && s[i + 1] === '/') {
+      break; // apostrophes live in comments too
+    }
+  }
+  return quote !== null;
+}
+
+/**
+ * Reject a "file" that is really our own prompt echoed back, a placeholder, or
+ * a reply cut off mid-stream.
+ *
+ * Deliberately biased towards FALSE NEGATIVES: a wrong rejection burns a whole
+ * rebuild round (plan + build + review), a missed one costs a single review
+ * round because the reviewer catches it. That is why brace counting is gone -
+ * braces inside strings, regexes, template literals and JSX made it fire on
+ * perfectly valid files - and why only unmistakable signals remain.
  */
 function rejectReason(body) {
   const t = clean(body);
@@ -363,19 +574,21 @@ function rejectReason(body) {
   if (/^PATH:/im.test(t) && /^REQUEST:/im.test(t)) return 'echoed the prompt header';
   if (/^(REVIEW|REQUEST|WRITTEN SO FAR)$/im.test(t)) return 'echoed a protocol tag';
 
-  // A reply captured mid-stream ends in the middle of a construct. Catching it
-  // here means the reviewer is never asked to judge half a file - it costs one
-  // rebuild instead of a wasted review round plus a RETRY.
-  const unbalanced = (open, close) => {
-    const o = (t.match(open) || []).length;
-    const c = (t.match(close) || []).length;
-    return o > c;
-  };
-  if (unbalanced(/<script\b/gi, /<\/script>/gi)) return 'truncated: unclosed <script>';
-  if (unbalanced(/<style\b/gi, /<\/style>/gi)) return 'truncated: unclosed <style>';
-  if (/<html\b/i.test(t) && !/<\/html>/i.test(t)) return 'truncated: unclosed <html>';
-  const braces = (t.match(/\{/g) || []).length - (t.match(/\}/g) || []).length;
-  if (braces > 2) return `truncated: ${braces} unclosed braces`;
+  // Tags that never close ANYWHERE in the body: an unclosed <script> is not a
+  // style choice, the stream stopped. Counting pairs is not worth it - one
+  // "</script>" inside a JS string would flip a valid file to rejected.
+  if (/<script\b/i.test(t) && !/<\/script\s*>/i.test(t)) return 'truncated: unclosed <script>';
+  if (/<style\b/i.test(t) && !/<\/style\s*>/i.test(t)) return 'truncated: unclosed <style>';
+  if (/<html\b/i.test(t) && !/<\/html\s*>/i.test(t)) return 'truncated: unclosed <html>';
+
+  const last = (t.split('\n').filter((l) => l.trim()).pop() || '').trim();
+  const comment = /^(#|\/\/|\*|<!--|--|;)/.test(last) || /^[`'"]+$/.test(last);
+  if (!comment && !/[;,{}()[\]>:]$/.test(last) && endsInsideString(last)) {
+    return 'truncated: ends inside a string';
+  }
+  // Nothing valid ends on an opening bracket; the size gate keeps short
+  // fragments that are legitimately a stub out of it.
+  if (t.length > 2000 && /[{([]$/.test(last)) return 'truncated: ends on an open construct';
 
   return null;
 }
@@ -384,11 +597,14 @@ module.exports = {
   MODES,
   systems,
   TAGS,
+  inferMode,
   parsePath,
   parseVerdict,
   parseAudit,
   unfence,
   stripStrayFences,
+  extractBody,
+  condense,
   clean,
   slug,
   rejectReason,

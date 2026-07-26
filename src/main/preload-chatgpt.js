@@ -220,16 +220,63 @@ function insertText(el, text) {
  * button is both a hazard (clicking it aborts the answer) and the single most
  * reliable "still working" signal on the page.
  */
+const STOP_SELECTORS = [
+  '[data-testid="stop-button"]',
+  'button[data-testid*="stop" i]',
+  'button[aria-label*="stop" i]',
+  '[role="button"][aria-label*="stop" i]',
+];
+
+/** Last node we accepted as the stop button, and when we last swept for one. */
+let stopCache = { el: null, at: 0 };
+const STOP_SWEEP_MS = 700;
+
+/**
+ * Is this still a stop control?
+ *
+ * Identity is re-checked, not assumed: the site swaps stop back to send by
+ * re-rendering the SAME element with new attributes, so a cached node that is
+ * merely still on screen would report "generating" forever - and awaitReply is
+ * built never to return while that is true.
+ */
+function stillStop(el) {
+  if (!el || !el.isConnected) return false;
+  for (const sel of STOP_SELECTORS) {
+    try {
+      if (el.matches(sel)) return true;
+    } catch { /* a selector Chromium refuses to parse */ }
+  }
+  const label = `${el.getAttribute('aria-label') || ''} ${el.title || ''}`;
+  return /\bstop\b/i.test(label);
+}
+
 function findStopButton() {
-  const explicit = q1('[data-testid="stop-button"]');
-  if (visible(explicit)) return explicit;
-  return (
+  // awaitReply asks this five times a second for as long as a reply takes, so
+  // the order here is deliberate: re-checking the node we already found is a
+  // handful of attribute reads, while sweeping every button on the page costs a
+  // forced layout per button and is what makes the tab feel frozen mid-stream.
+  const cached = stopCache.el;
+  if (stillStop(cached) && visible(cached)) return cached;
+
+  for (const sel of STOP_SELECTORS) {
+    const el = q1(sel);
+    if (visible(el)) {
+      stopCache = { el, at: Date.now() };
+      return el;
+    }
+  }
+
+  // Full sweep only when every known hook is gone - i.e. a redesign - and never
+  // more than once a second. Labels are tested before visibility so the layout
+  // flush is paid for one candidate instead of several hundred.
+  if (Date.now() - stopCache.at < STOP_SWEEP_MS) return null;
+  const found =
     [...document.querySelectorAll('button, [role="button"]')].find((b) => {
-      if (!visible(b)) return false;
       const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
-      return /\bstop\b/i.test(label);
-    }) || null
-  );
+      return /\bstop\b/i.test(label) && visible(b);
+    }) || null;
+  stopCache = { el: found, at: Date.now() };
+  return found;
 }
 
 const isGenerating = () => !!findStopButton();
@@ -501,20 +548,107 @@ function readMessage(el) {
 }
 
 /**
+ * Rendered text per message, keyed by a change stamp that costs no layout.
+ *
+ * innerText forces the whole document's layout to be flushed, so re-reading
+ * every message of a 60KB conversation - which awaitReply used to do five
+ * times a second - spends most of the tab's frame budget re-deriving text that
+ * cannot have changed. A message is frozen once it has finished streaming.
+ */
+const messageCache = new WeakMap();
+
+/** textContent walks the subtree but never forces layout, unlike innerText. */
+const stamp = (el) =>
+  (el.textContent || '').length + ':' + el.getElementsByTagName('pre').length;
+
+function readMessageCached(el, live) {
+  // The newest message is the one being written, so it is always read fresh:
+  // a stale tail is how a half-finished file gets mistaken for a whole one.
+  if (live) return readMessage(el);
+  const key = stamp(el);
+  const hit = messageCache.get(el);
+  if (hit && hit.key === key) return hit.text;
+  const text = readMessage(el);
+  messageCache.set(el, { key, text });
+  return text;
+}
+
+/** Long enough to collapse the callers that poll, short enough to feel live. */
+const TRANSCRIPT_TTL_MS = 150;
+let tCache = { at: 0, text: '' };
+
+/**
  * The conversation as text. Reading the message nodes rather than the whole
  * scroller keeps page furniture ("ChatGPT can make mistakes", the composer
  * itself when it lives inside the scroll region) out of the delta we diff.
+ *
+ * Pass `force` when the answer must not be up to 150ms old - a baseline
+ * snapshot, in practice.
  */
-function transcript() {
+function transcript(force) {
+  if (!force && Date.now() - tCache.at < TRANSCRIPT_TTL_MS) return tCache.text;
   const nodes = messageNodes();
+  let text;
   if (nodes.length) {
-    return nodes.map(readMessage).filter(Boolean).join('\n\n');
+    const last = nodes.length - 1;
+    text = nodes
+      .map((el, i) => readMessageCached(el, i === last))
+      .filter(Boolean)
+      .join('\n\n');
+  } else {
+    // Always a string: callers take .length of this without checking, and a
+    // root that has not painted yet has no innerText at all.
+    const root = findOutputRoot();
+    text = (root && root.innerText) || '';
   }
-  const root = findOutputRoot();
-  return root ? root.innerText : '';
+  tCache = { at: Date.now(), text };
+  return text;
 }
 
 /* ---------------------------------------------------- main-process typing */
+
+const isField = (el) => !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT');
+
+/** Can text actually be put into this thing right now? */
+const isEditable = (el) =>
+  !!el &&
+  (el.isContentEditable || isField(el)) &&
+  !isDisabled(el) &&
+  el.readOnly !== true;
+
+/**
+ * What the composer holds. textContent rather than innerText: this is polled
+ * while the previous answer is still rendering, and innerText would force a
+ * full layout flush on every read. Every caller compares on letters and digits
+ * or on "did this change at all", so the lost line breaks cost nothing.
+ */
+function composerValue(el) {
+  if (!el) return '';
+  if (isField(el)) return el.value ?? '';
+  return el.textContent ?? '';
+}
+
+/**
+ * Empty the composer.
+ *
+ * selectAll/delete act on the focused editable - with focus elsewhere they act
+ * on the DOCUMENT, so the focus check is a guard against clearing the page
+ * rather than the input. Returns false when it could not safely try.
+ */
+function emptyComposer(el) {
+  if (isField(el)) {
+    insertText(el, '');
+    return true;
+  }
+  const active = document.activeElement;
+  if (active !== el && !el.contains(active)) return false;
+  document.execCommand('selectAll', false, null);
+  document.execCommand('delete', false, null);
+  return true;
+}
+
+/** Budget for prepare. Must stay well inside the renderer's own 15s guard. */
+const PREPARE_WAIT_MS = 6000;
 
 /**
  * Focus and empty the composer, and snapshot the transcript.
@@ -523,19 +657,44 @@ function transcript() {
  * because synthetic key/paste events are untrusted: ProseMirror ignores them
  * whenever the window is not OS-focused. The main process does not care about
  * focus, which is what makes unattended runs reliable.
+ *
+ * It waits instead of failing on the first look: the composer unmounts across a
+ * navigation and goes read-only while a previous answer renders, and answering
+ * "not there" for a tab that is merely busy costs the caller a whole round.
  */
-function prepare() {
-  const composer = findComposer();
-  if (!composer) throw new Error('composer not found - use Pick Composer');
-  focusEl(composer);
-  if (composer.tagName === 'TEXTAREA' || composer.tagName === 'INPUT') {
-    insertText(composer, '');
-  } else {
-    document.execCommand('selectAll', false, null);
-    document.execCommand('delete', false, null);
+async function prepare() {
+  let composer = null;
+  const deadline = Date.now() + PREPARE_WAIT_MS;
+  for (;;) {
+    const el = findComposer();
+    if (isEditable(el)) { composer = el; break; }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        el ? 'composer found but not editable' : 'composer not found - use Pick Composer'
+      );
+    }
+    await sleep(200);
   }
-  state.before = transcript();
-  return { before: state.before.length };
+
+  focusEl(composer);
+  emptyComposer(composer);
+
+  // A composer that still holds the last prompt would prepend it to the next
+  // one. One execCommand loses that race often enough - ProseMirror re-renders
+  // under it, an attachment chip is still uploading - to be worth retrying.
+  let leftover = composerValue(composer).trim();
+  for (let i = 0; i < 6 && leftover; i++) {
+    await sleep(120);
+    focusEl(composer);
+    emptyComposer(composer);
+    leftover = composerValue(composer).trim();
+  }
+
+  state.before = transcript(true);
+  // `cleared` is reported rather than thrown: some composers render their
+  // placeholder as a real node, and refusing to prepare over that would fail
+  // every prompt instead of just this one.
+  return { before: state.before.length, cleared: !leftover, leftover: leftover.length };
 }
 
 /** Click the send control. Returns false if we could not find one. */
@@ -548,8 +707,7 @@ function clickSend() {
 
 /** True once the composer actually holds our text (so we know typing landed). */
 function composerText() {
-  const c = findComposer();
-  return c ? (c.innerText ?? c.value ?? '') : '';
+  return composerValue(findComposer());
 }
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -589,6 +747,89 @@ function afterEcho(text, full) {
 }
 
 /**
+ * Enough of a message to recognise our own prompt in. Our prompts are tagged in
+ * their first line, and the needle is 40 characters, so a generous prefix beats
+ * normalising 30KB of pasted file bodies on every poll.
+ */
+const ECHO_SCAN_CHARS = 8000;
+const headOf = (el) => norm((el.textContent || '').slice(0, ECHO_SCAN_CHARS));
+
+/**
+ * Has our own prompt been rendered into the conversation yet?
+ *
+ * Only the newest turns can hold it, and norm() throws away everything except
+ * letters and digits - so textContent is enough, and unlike innerText it costs
+ * no layout. This runs four times a second for up to 30s.
+ */
+function echoVisible(wanted) {
+  if (!wanted) return true;
+  const nodes = messageNodes();
+  if (!nodes.length) return norm(transcript()).includes(wanted);
+  for (let i = nodes.length - 1; i >= Math.max(0, nodes.length - 4); i--) {
+    if (headOf(nodes[i]).includes(wanted)) return true;
+  }
+  return false;
+}
+
+/**
+ * The answer to the prompt we just sent, as a message node - or null when it is
+ * not on screen yet.
+ *
+ * Two things have to hold, and both matter. The newest turn must be the model's
+ * (while only our own echo is rendered, handing it back would look exactly like
+ * a finished reply), and the turn before it must be OUR prompt: a retry sends
+ * the same text into the same chat, and the PREVIOUS answer is stable,
+ * non-empty and completely wrong.
+ */
+function freshAnswerNode(wanted) {
+  const nodes = messageNodes();
+  const last = nodes[nodes.length - 1];
+  if (!last) return null;
+  const role = last.getAttribute('data-message-author-role');
+  if (!role || role === 'user') return null; // no roles in the markup: not safe
+  if (!wanted) return last;
+
+  for (let i = nodes.length - 2; i >= 0 && i >= nodes.length - 5; i--) {
+    if (nodes[i].getAttribute('data-message-author-role') !== 'user') continue;
+    // Only the newest user turn counts - an older identical prompt is exactly
+    // the case this exists to reject.
+    return headOf(nodes[i]).includes(wanted) ? last : null;
+  }
+  return null;
+}
+
+/** Past this, rebuilding the whole transcript per poll is what wedges the tab. */
+const BIG_TRANSCRIPT = 16000;
+const BIG_ANSWER = 6000;
+
+/**
+ * The reply so far.
+ *
+ * Once the conversation (or the answer alone) is large, read ONLY the newest
+ * message. The caller wants the text after our echo and nothing else, and that
+ * IS the newest message - while re-deriving the other 60KB several times a
+ * second is precisely what starved the tab and made a long reply arrive
+ * truncated. Below that size the original whole-transcript diff still runs,
+ * because it also copes with markup that carries no author roles.
+ */
+function replyDelta(text, before, echoSeen, wanted) {
+  if (echoSeen) {
+    const answer = freshAnswerNode(wanted);
+    if (
+      answer &&
+      (tCache.text.length >= BIG_TRANSCRIPT ||
+        (answer.textContent || '').length >= BIG_ANSWER)
+    ) {
+      return readMessage(answer);
+    }
+  }
+  const full = transcript();
+  const delta = echoSeen ? afterEcho(text, full) : null;
+  if (delta !== null) return delta;
+  return full.startsWith(before) ? full.slice(before.length) : full;
+}
+
+/**
  * Wait for a genuine reply.
  *
  * Three conditions, all required: our prompt's echo has appeared, real content
@@ -619,7 +860,7 @@ async function awaitReply(opts = {}) {
   let echoSeen = false;
   const wanted = norm(text).slice(0, 40);
   while (Date.now() - started < 30000) {
-    if (norm(transcript()).includes(wanted)) { echoSeen = true; break; }
+    if (echoVisible(wanted)) { echoSeen = true; break; }
     await sleep(250);
   }
 
@@ -642,13 +883,11 @@ async function awaitReply(opts = {}) {
     } else {
       idleTicks++;
     }
-    const full = transcript();
-
-    let delta = echoSeen ? afterEcho(text, full) : null;
-    if (delta === null) {
-      delta = full.startsWith(before) ? full.slice(before.length) : full;
-    }
-    delta = delta.trim();
+    // A prompt that took longer than step 1 to render is not a lost cause: the
+    // echo is what unlocks reading the answer node directly, so keep looking
+    // for it instead of diffing the whole transcript for the next ten minutes.
+    if (!echoSeen && echoVisible(wanted)) echoSeen = true;
+    const delta = replyDelta(text, before, echoSeen, wanted).trim();
 
     // Drop placeholder AND message chrome. ChatGPT collapses a long prompt
     // behind "Show more", and that button's text arriving in the transcript
@@ -739,12 +978,8 @@ function clearComposer() {
   const c = findComposer();
   if (!c) return false;
   focusEl(c);
-  if (c.tagName === 'TEXTAREA' || c.tagName === 'INPUT') insertText(c, '');
-  else {
-    document.execCommand('selectAll', false, null);
-    document.execCommand('delete', false, null);
-  }
-  return true;
+  emptyComposer(c);
+  return !composerValue(c).trim();
 }
 
 /** Describe the send control, if one is currently rendered. */
@@ -1007,7 +1242,7 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
   try {
     let result = null;
     if (cmd === 'ask') result = await ask(args.text, args.opts);
-    else if (cmd === 'prepare') result = prepare();
+    else if (cmd === 'prepare') result = await prepare();
     else if (cmd === 'clickSend') result = clickSend();
     else if (cmd === 'composerText') result = composerText();
     else if (cmd === 'awaitReply') result = await awaitReply(args.opts);
@@ -1030,12 +1265,15 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
       const composer = findComposer();
       const send = findSendButton();
       const model = findModelTrigger();
+      // Autopilot polls probe purely for transcriptChars, so nothing in here
+      // may do the same expensive lookup twice.
+      const outputRoot = findOutputRoot();
       result = {
         url: location.href,
         composer: composer ? cssPath(composer) : null,
         sendButton: send ? (send.getAttribute('aria-label') || send.textContent || '?').trim() : null,
         modelTrigger: model ? (model.textContent || '').trim() : null,
-        outputRoot: findOutputRoot() ? cssPath(findOutputRoot()) : null,
+        outputRoot: outputRoot ? cssPath(outputRoot) : null,
         transcriptChars: transcript().length,
         messages: messageNodes().length,
         generating: isGenerating(),

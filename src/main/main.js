@@ -20,6 +20,35 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
+/** How much text one insertText call may carry, and the gap between calls. */
+const TYPE_CHUNK = 4096;
+const TYPE_YIELD_MS = 16; // ~one frame: long enough for the editor to paint
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Split a prompt for chunked insertion. Concatenating the pieces reproduces the
+ * input byte for byte.
+ *
+ * Boundaries are pulled back to the end of a line whenever one is in reach: the
+ * composer runs markdown input rules on what it receives, and cutting through
+ * the middle of a fence or a list marker gives it something different to look
+ * at than the whole prompt would.
+ */
+function typeChunks(text) {
+  const out = [];
+  for (let i = 0; i < text.length; ) {
+    let end = Math.min(i + TYPE_CHUNK, text.length);
+    if (end < text.length) {
+      const nl = text.lastIndexOf('\n', end - 1);
+      if (nl > i) end = nl + 1;
+    }
+    out.push(text.slice(i, end));
+    i = end;
+  }
+  return out;
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1680,
@@ -61,11 +90,31 @@ app.whenReady().then(async () => {
   // Typing and Enter go through webContents, not synthetic DOM events: those
   // are untrusted and a rich-text editor ignores them when the window is not
   // OS-focused. This path works with the window in the background.
-  ipcMain.handle('tab:type', (_e, { id, text }) => {
+  //
+  // The text arrives in pieces because one insertText of a whole 50KB prompt
+  // blocks the target tab's renderer for seconds: ProseMirror re-parses and
+  // re-lays-out the entire document in a single task, and every composer read
+  // that follows times out - which is how a review round silently turned into
+  // "reviewer unavailable, accepting the file". Chunking hands the editor work
+  // it can finish between frames. The handler stays awaitable, so the renderer
+  // still learns exactly when the last piece has landed.
+  ipcMain.handle('tab:type', async (_e, { id, text }) => {
     const wc = webContents.fromId(id);
     if (!wc) throw new Error('no such webContents ' + id);
+    const body = String(text ?? '');
     wc.focus();
-    wc.insertText(text);
+    if (body.length <= TYPE_CHUNK) {
+      await wc.insertText(body);
+      return true;
+    }
+    for (const piece of typeChunks(body)) {
+      if (wc.isDestroyed()) throw new Error('tab closed while typing');
+      // Re-focus per piece: another tab focusing mid-insert would otherwise
+      // spray the rest of the prompt into the wrong composer.
+      wc.focus();
+      await wc.insertText(piece);
+      await delay(TYPE_YIELD_MS);
+    }
     return true;
   });
 
