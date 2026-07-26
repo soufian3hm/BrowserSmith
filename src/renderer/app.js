@@ -268,13 +268,19 @@ async function rotateIfBloated(tag) {
   }
   if (chars < ROTATE_AT_CHARS) return;
   try {
-    try {
-      await drive(wvOf(tag), 'newChat', {}, 30000);
-    } catch (e) {
-      // The chat is now in an unknown mid-transition state; a soft retry types
-      // into a dead composer. Reload the tab onto a guaranteed-fresh chat.
-      log(`${tag.toUpperCase()}: new-chat click failed (${e.message}) — hard reset`, 'err');
+    if (site.freshChatByNavigation) {
+      // Navigating carries the temporary-chat flag; the in-page "New chat"
+      // button would open a normal, saved conversation instead.
       await hardResetTab(tag);
+    } else {
+      try {
+        await drive(wvOf(tag), 'newChat', {}, 30000);
+      } catch (e) {
+        // The chat is now in an unknown mid-transition state; a soft retry
+        // types into a dead composer. Reload onto a guaranteed-fresh chat.
+        log(`${tag.toUpperCase()}: new-chat click failed (${e.message}) — hard reset`, 'err');
+        await hardResetTab(tag);
+      }
     }
     seeded.delete(tag);
     log(`${tag.toUpperCase()}: transcript hit ${chars} chars — rotated to a fresh chat`, 'ok');
@@ -399,7 +405,9 @@ async function buildFile(project, filePath, request, mode) {
       }
       continue;
     }
-    const candidate = protocol.unfence(buildReply);
+    // unfence removes a fence wrapping the whole reply; ChatGPT also splits one
+    // file across several code blocks, leaving ``` lines mid-file.
+    const candidate = protocol.stripStrayFences(protocol.unfence(buildReply), filePath);
     const bad = protocol.rejectReason(candidate);
     if (bad) {
       log(`B output rejected (${bad}), retrying`, 'err');

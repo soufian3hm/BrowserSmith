@@ -43,6 +43,7 @@ const api = {
     parseVerdict: (reply) => protocol.parseVerdict(reply),
     parseAudit: (reply) => protocol.parseAudit(reply),
     unfence: (text) => protocol.unfence(text),
+    stripStrayFences: (body, filePath) => protocol.stripStrayFences(body, filePath),
     clean: (text) => protocol.clean(text),
     slug: (text) => protocol.slug(text),
     rejectReason: (text) => protocol.rejectReason(text),

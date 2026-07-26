@@ -565,6 +565,13 @@ const PLACEHOLDER =
   /^(generating|thinking|reasoning|reasoned|searching|searching the web|browsing|browsing the web|finding sources|reading sources|done thinking|analyz\w*|working|loading|reading|planning|running|creating|crafting|drafting|composing|reviewing|preparing|writing file|reading file|(thought|reasoned|worked|searched|analyzed) for [\w\s.]*|loaded [\w\s]*tools?|using [\w\s]*tool|alpha|…|\.{3})[\s.…]*$/i;
 
 /**
+ * Per-message UI controls that render as text inside the transcript.
+ * "Retry" is deliberately excluded: it is the reviewer's verdict word.
+ */
+const CHROME =
+  /^(show (more|less)|copy( code)?|edit|regenerate|share|read aloud|good response|bad response)$/i;
+
+/**
  * Everything after the echo of our own prompt.
  *
  * The message we sent is rendered into the transcript, so raw "text added since
@@ -626,10 +633,16 @@ async function awaitReply(opts = {}) {
     }
     delta = delta.trim();
 
-    // Drop trailing placeholder lines while the model is still streaming.
+    // Drop placeholder AND message chrome. ChatGPT collapses a long prompt
+    // behind "Show more", and that button's text arriving in the transcript
+    // used to look like the reply landing - the quiet window then elapsed
+    // before the real answer had started streaming.
     const meaningful = delta
       .split('\n')
-      .filter((l) => l.trim() && !PLACEHOLDER.test(l.trim()))
+      .filter((l) => {
+        const t = l.trim();
+        return t && !PLACEHOLDER.test(t) && !CHROME.test(t);
+      })
       .join('\n')
       .trim();
 

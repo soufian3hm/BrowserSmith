@@ -335,6 +335,23 @@ function parseVerdict(reply) {
 }
 
 /**
+ * Remove fence markers left inside a file body.
+ *
+ * unfence() only strips a fence wrapping the WHOLE reply. ChatGPT often splits
+ * one file across several code blocks, so rebuilt fences end up in the middle
+ * of the content - a live run produced an index.html with ``` inside its
+ * <style> block, which renders but silently corrupts the CSS after it.
+ * Markdown files are left alone: there a fence line is real content.
+ */
+function stripStrayFences(body, filePath = '') {
+  if (/\.(md|markdown|mdx)$/i.test(filePath)) return body;
+  return String(body || '')
+    .split('\n')
+    .filter((l) => !/^\s*```[\w+-]*\s*$/.test(l))
+    .join('\n');
+}
+
+/**
  * Reject a "file" that is really our own prompt echoed back, or a placeholder.
  * Returns a reason string, or null when the content looks like a real file.
  */
@@ -356,6 +373,7 @@ module.exports = {
   parseVerdict,
   parseAudit,
   unfence,
+  stripStrayFences,
   clean,
   slug,
   rejectReason,

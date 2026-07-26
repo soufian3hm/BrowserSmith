@@ -12,7 +12,14 @@ module.exports = {
     key: 'chatgpt',
     name: 'ChatGPT',
     brand: 'buildgpt',
-    url: 'https://chatgpt.com/',
+    // Temporary chat: these conversations are not saved to history and do not
+    // train the account. The agents send hundreds of messages, so anything
+    // else would bury the user's real chats.
+    url: 'https://chatgpt.com/?temporary-chat=true',
+    // Rotate to a fresh chat by navigating rather than by clicking "New chat":
+    // that button opens a normal, saved conversation and would defeat the
+    // temporary-chat flag above.
+    freshChatByNavigation: true,
     partition: 'persist:chatgpt',
     authCookies: ['__Secure-next-auth.session-token', '__Secure-next-auth.callback-url', '_account'],
     primaryAuthCookie: '__Secure-next-auth.session-token',
