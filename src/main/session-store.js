@@ -68,7 +68,10 @@ async function status() {
   const all = everything.filter((c) => onSite(c.domain));
   const found = {};
   for (const name of AUTH_COOKIES) {
-    const c = all.find((x) => x.name === name);
+    // Prefix, not equality: next-auth splits a large JWT across
+    // `<name>.0`, `<name>.1`, ... and a Google SSO token is large enough to be
+    // chunked - exact matching reported a logged-in session as logged out.
+    const c = all.find((x) => x.name === name || x.name.startsWith(name + '.'));
     if (c) {
       found[name] = c.expirationDate
         ? new Date(c.expirationDate * 1000).toISOString().slice(0, 10)
@@ -113,7 +116,10 @@ function watch() {
   // A login writes cookies; flush shortly after any cookie change settles.
   let debounce = null;
   s.cookies.on('changed', (_e, cookie) => {
-    if (!AUTH_COOKIES.includes(cookie.name)) return;
+    const isAuth = AUTH_COOKIES.some(
+      (n) => cookie.name === n || cookie.name.startsWith(n + '.')
+    );
+    if (!isAuth) return;
     clearTimeout(debounce);
     debounce = setTimeout(flush, 1500);
   });

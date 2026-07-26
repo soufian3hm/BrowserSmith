@@ -37,7 +37,7 @@ const MODEL_HINT =
  * "Get Plus" and friends contain model words but open a paywall, not a menu.
  */
 const MODEL_DENY =
-  /\b(upgrade|subscribe|renew|get (plus|pro|go)|share|new chat|log ?in|log ?out|sign ?up|sign ?in|settings|profile|invite|help|archive|library|sora|gpts|projects)\b/i;
+  /\b(upgrade|subscribe|renew|billing|payment|invoice|credits?|auto-?reload|admin|workspace|get (plus|pro|go)|share|new chat|log ?in|log ?out|sign ?up|sign ?in|settings|profile|invite|help|archive|library|sora|gpts|projects)\b/i;
 
 /** Kept local because ../shared/site is unreachable from a sandboxed preload. */
 const NEW_CHAT_LABEL = /\bnew chat\b/i;
@@ -338,14 +338,32 @@ function findModelTrigger() {
     if (visible(el)) return el;
   }
 
+  // Only on a conversation page. On /admin/billing the scan matched a "Turn on
+  // auto-reload" button (\bauto\b) and clicking it opened billing settings.
+  if (!/^\/(c\/|g\/|$)/.test(location.pathname) && location.pathname !== '/') {
+    return null;
+  }
+
   const scored = [
     ...document.querySelectorAll('button, [role="button"], [role="combobox"]'),
   ]
     .filter(visible)
-    .map((b) => ({ b, t: (b.textContent || '').trim() }))
+    // A model picker is a menu opener. Requiring the affordance rejects the
+    // plain action buttons that merely happen to contain a model-ish word.
     .filter(
-      ({ t }) => t.length > 0 && t.length < 40 && MODEL_HINT.test(t) && !MODEL_DENY.test(t)
+      (b) =>
+        b.getAttribute('aria-haspopup') ||
+        b.hasAttribute('aria-expanded') ||
+        b.getAttribute('role') === 'combobox'
     )
+    .map((b) => ({ b, t: (b.textContent || '').trim() }))
+    .filter(({ t }) => {
+      if (!t || t.length >= 40 || MODEL_DENY.test(t)) return false;
+      // "auto" is only a model name on its own; inside a phrase it is almost
+      // always something else ("auto-reload", "automatic backups").
+      if (/^auto$/i.test(t)) return true;
+      return MODEL_HINT.test(t) && !/\bauto-/i.test(t);
+    })
     .map(({ b }) => {
       const r = b.getBoundingClientRect();
       let score = 0;

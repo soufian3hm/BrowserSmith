@@ -290,6 +290,11 @@ function clean(text) {
     .filter((l) => !PLACEHOLDER_LINE.test(l.trim()))
     // Chat UIs stamp a time on each message bubble, e.g. "4:37 AM".
     .filter((l) => !/^\d{1,2}:\d{2}\s*(AM|PM)?$/i.test(l.trim()))
+    // ChatGPT message chrome that sits inside the transcript text. "Retry" is
+    // deliberately absent: it is the reviewer's verdict word.
+    .filter(
+      (l) => !/^(show (more|less)|copy( code)?|edit|regenerate|share|read aloud)$/i.test(l.trim())
+    )
     .join('\n')
     .trim();
 }
