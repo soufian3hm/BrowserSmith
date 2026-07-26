@@ -32,9 +32,8 @@ files:
   - src/**/*.js
   - src/**/*.html
   - src/**/*.css
-  - assets/icon.ico
-  - assets/icon.png
-  - assets/icon.svg
+  - assets/logo.ico
+  - assets/logo-512.png
   - "!.profile"
   - "!.profile/**"
   - "!workspace"
@@ -44,7 +43,7 @@ files:
   - "!**/*.map"
 
 win:
-  icon: assets/icon.ico
+  icon: assets/logo.ico
   target:
     - target: nsis
       arch: [x64]
@@ -76,7 +75,7 @@ portable:
 # un-notarized: Gatekeeper will refuse it on first launch until someone with a
 # Developer ID signs and notarizes a build.
 mac:
-  icon: assets/icon.png
+  icon: assets/logo-512.png
   category: public.app-category.developer-tools
   target:
     - target: dmg

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/png/logo-256.png" alt="BrowserSmith" width="128" height="128">
+</p>
+
 <h1 align="center">BrowserSmith</h1>
 
 <p align="center">

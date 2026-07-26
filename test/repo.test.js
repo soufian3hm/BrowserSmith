@@ -159,9 +159,12 @@ test('electron-builder is configured for a real Windows release', () => {
   assert.match(yml, /^appId:\s*[\w.]+$/m);
   assert.match(yml, /output:\s*build-out/);
 
-  // The committed icon, not a generated one.
-  assert.match(yml, /icon:\s*assets\/icon\.ico/);
-  assert.ok(fs.existsSync(path.join(ROOT, 'assets', 'icon.ico')), 'assets/icon.ico is missing');
+  // The committed icon, not a generated one. logo.png is the single source of
+  // truth; logo.ico and the PNG set are derived from it by `npm run icons`.
+  assert.match(yml, /icon:\s*assets\/logo\.ico/);
+  for (const f of ['logo.png', 'logo.ico', 'logo-512.png']) {
+    assert.ok(fs.existsSync(path.join(ROOT, 'assets', f)), `assets/${f} is missing`);
+  }
 
   const targets = ymlList(yml.slice(yml.indexOf('\nwin:')), 'target');
   const named = targets.join(' ');

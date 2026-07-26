@@ -22,11 +22,11 @@ const toolchain = require('./toolchain');
  */
 const ICON_PATH = (() => {
   const dir = path.join(__dirname, '..', '..', 'assets');
-  const file = path.join(dir, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  const file = path.join(dir, process.platform === 'win32' ? 'logo.ico' : 'logo-512.png');
   return fs.existsSync(file) ? file : null;
 })();
 const ICON_PNG = (() => {
-  const file = path.join(__dirname, '..', '..', 'assets', 'icon.png');
+  const file = path.join(__dirname, '..', '..', 'assets', 'logo-512.png');
   return fs.existsSync(file) ? file : null;
 })();
 
