@@ -378,6 +378,21 @@ running model-authored code tolerable.
 | Python or Go project "detected but not runnable" | The runtime is not installed. The auditor is told this explicitly and will not treat it as a defect in the code. |
 | Windows SmartScreen on a portable build | The build is unsigned. More info → Run anyway, or build it yourself from source. |
 
+## Star history
+
+If BrowserSmith is useful to you, a star is the signal that keeps it moving.
+
+<a href="https://www.star-history.com/#soufian3hm/BrowserSmith&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"
+            srcset="https://api.star-history.com/svg?repos=soufian3hm/BrowserSmith&type=Date&theme=dark">
+    <source media="(prefers-color-scheme: light)"
+            srcset="https://api.star-history.com/svg?repos=soufian3hm/BrowserSmith&type=Date">
+    <img alt="BrowserSmith star history" width="640"
+         src="https://api.star-history.com/svg?repos=soufian3hm/BrowserSmith&type=Date">
+  </picture>
+</a>
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first — it documents the dev loop and
