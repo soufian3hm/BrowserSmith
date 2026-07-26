@@ -264,7 +264,14 @@ async function rotateIfBloated(tag) {
   }
   if (chars < ROTATE_AT_CHARS) return;
   try {
-    await drive(wvOf(tag), 'newChat', {}, 15000);
+    try {
+      await drive(wvOf(tag), 'newChat', {}, 30000);
+    } catch (e) {
+      // The chat is now in an unknown mid-transition state; a soft retry types
+      // into a dead composer. Reload the tab onto a guaranteed-fresh chat.
+      log(`${tag.toUpperCase()}: new-chat click failed (${e.message}) — hard reset`, 'err');
+      await hardResetTab(tag);
+    }
     seeded.delete(tag);
     log(`${tag.toUpperCase()}: transcript hit ${chars} chars — rotated to a fresh chat`, 'ok');
     if (autopilot && tag === ROLES.planner) {
@@ -274,6 +281,22 @@ async function rotateIfBloated(tag) {
   } catch (e) {
     log(`${tag.toUpperCase()}: chat rotation failed (${e.message}) — continuing`, 'err');
   }
+}
+
+/** Point the tab at a brand-new Notion AI chat. The reliable last resort. */
+function hardResetTab(tag) {
+  const wv = wvOf(tag);
+  return new Promise((resolve) => {
+    const done = () => {
+      wv.removeEventListener('did-stop-loading', done);
+      clearTimeout(timer);
+      seeded.delete(tag);
+      setTimeout(resolve, 3000); // let the composer mount
+    };
+    const timer = setTimeout(done, 25000);
+    wv.addEventListener('did-stop-loading', done);
+    wv.src = 'https://app.notion.com/ai';
+  });
 }
 
 /** Ask a role's tab, marking it busy so you can see who is working. */
@@ -311,9 +334,10 @@ async function seedTab(tag) {
     } catch (e) {
       // One clean retry in a fresh chat: a seed that cannot be read dooms the
       // whole run, and rotation clears every known cause of unreadable replies.
-      log(`${tag.toUpperCase()} seed failed (${e.message}) — rotating and retrying`, 'err');
-      await drive(wvOf(tag), 'newChat', {}, 20000).catch(() => {});
-      await new Promise((r) => setTimeout(r, 2000)); // let the fresh chat settle
+      log(`${tag.toUpperCase()} seed failed (${e.message}) — hard reset and retry`, 'err');
+      // A soft new-chat retry types into the same dead composer; go straight
+      // to the reliable path: reload the tab onto a fresh /ai chat.
+      await hardResetTab(tag);
       await ask(wvOf(tag), contract + '\n\nReply with exactly: READY');
     }
     seeded.add(tag);
@@ -361,6 +385,14 @@ async function buildFile(project, filePath, request, mode) {
       );
     } catch (e) {
       log(`build attempt ${attempt + 1} failed: ${e.message}`, 'err');
+      // A blind chat stays blind: a prompt that vanished once will vanish
+      // again (seen live at 5.5KB - NOT a transcript-size problem). Give the
+      // next attempt a brand-new chat instead of the same broken one.
+      if (/no response detected|timed out|composer never received/i.test(String(e.message || e))) {
+        log('B: reply detection broke — moving to a fresh chat', 'err');
+        await hardResetTab(ROLES.builder).catch(() => {});
+        await seedTab(ROLES.builder).catch(() => {});
+      }
       continue;
     }
     const candidate = protocol.unfence(buildReply);

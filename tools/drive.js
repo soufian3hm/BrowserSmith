@@ -22,7 +22,9 @@ async function targets() {
 /** The control window (index.html), not the two Notion webviews. */
 async function controlTarget() {
   const list = await targets();
-  const t = list.find((x) => x.url.includes('index.html'));
+  // Must be the control window, not a project preview that happens to be an
+  // index.html (the pomodoro build produced exactly that collision).
+  const t = list.find((x) => x.type === 'page' && x.url.includes('src/renderer/index.html'));
   if (!t) throw new Error('control window not found - is the app running?');
   return t;
 }

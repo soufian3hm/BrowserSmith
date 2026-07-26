@@ -582,11 +582,15 @@ async function newChat() {
   if (!btn) throw new Error('New chat button not found');
   btn.click();
   // The click may navigate; the fresh chat's composer mounts noticeably later.
-  // Returning before it exists made the very next prompt land nowhere.
-  for (let i = 0; i < 40; i++) {
-    await sleep(250);
+  // Poll cheaply: findComposer first, and transcript() (expensive innerText on
+  // a large DOM) only once a composer exists - constant transcript() polling
+  // is what used to push this past the caller's timeout.
+  for (let i = 0; i < 20; i++) {
+    await sleep(400);
     const c = findComposer();
-    if (c && transcript().length < 2000) return { chars: transcript().length };
+    if (!c) continue;
+    const chars = transcript().length;
+    if (chars < 2000) return { chars };
   }
   throw new Error('new chat did not produce a usable composer');
 }
