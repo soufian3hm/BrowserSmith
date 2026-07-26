@@ -21,7 +21,11 @@ let flushTimer = null;
 
 /** Pin the profile next to the app so it is obvious, portable, and stable. */
 function pinProfileDir() {
-  const dir = path.join(__dirname, '..', '..', '.profile');
+  // Packaged: next to the .exe (portable). Dev: in the repo root. Both are
+  // writable and both keep the login local and visible.
+  const dir = app.isPackaged
+    ? path.join(path.dirname(process.execPath), '.profile')
+    : path.join(__dirname, '..', '..', '.profile');
   app.setPath('userData', dir);
   return dir;
 }

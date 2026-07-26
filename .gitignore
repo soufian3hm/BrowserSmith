@@ -2,3 +2,5 @@ node_modules/
 workspace/
 .DS_Store
 .profile/
+dist-app/
+build-out/

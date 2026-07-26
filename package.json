@@ -9,6 +9,7 @@
     "test": "node --test test/protocol.test.js"
   },
   "devDependencies": {
+    "@electron/packager": "^20.0.4",
     "electron": "^33.2.0"
   },
   "dependencies": {

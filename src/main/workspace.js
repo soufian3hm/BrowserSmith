@@ -7,7 +7,19 @@ const path = require('node:path');
  * from Notion is untrusted text, so paths are sanitized and confined here -
  * a reply of "../../.ssh/authorized_keys" must never escape.
  */
-const ROOT = path.resolve(__dirname, '..', '..', 'workspace');
+function computeRoot() {
+  // In the packaged app, projects live next to the .exe where the user can
+  // see them. In dev (and for the plain-node MCP server) they live in the
+  // repo root, as always.
+  try {
+    const { app } = require('electron');
+    if (app && app.isPackaged) {
+      return path.join(path.dirname(process.execPath), 'workspace');
+    }
+  } catch { /* plain node (MCP server) - no electron */ }
+  return path.resolve(__dirname, '..', '..', 'workspace');
+}
+const ROOT = computeRoot();
 
 function resolveSafe(rel) {
   const cleaned = String(rel || '')
