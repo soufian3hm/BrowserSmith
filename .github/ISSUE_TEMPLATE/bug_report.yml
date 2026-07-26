@@ -1,0 +1,123 @@
+name: Bug report
+description: Something the app did wrong during a run
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This app drives a web UI that changes without notice, so a bug is only
+        reproducible with the log. The Activity panel and the exact prompt are
+        worth more than any description.
+
+        Security issues do not belong here — see
+        [SECURITY.md](https://github.com/soufian3hm/BrowserSmith/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what the app did instead.
+    validations:
+      required: true
+
+  - type: input
+    id: prompt
+    attributes:
+      label: The exact request you typed
+      placeholder: a hill climb racing game with a fuel gauge
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [Auto, Next.js, Vite, Static site, Node.js, Python]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it broke
+      options:
+        - Login / session
+        - Seeding a tab
+        - Planner (tab A)
+        - Builder (tab B)
+        - Reviewer (tab C)
+        - Auditor (tab D)
+        - Scaffold
+        - npm install / dependency install
+        - Dev server or run
+        - Screenshot / preview
+        - Patching a file
+        - Autopilot
+        - Terminal
+        - Somewhere else
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Activity panel log
+      description: >
+        Copy the Activity feed from the run, from the "project →" line onward.
+        Redact anything personal — the log should not contain absolute paths,
+        but check.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: terminal
+    attributes:
+      label: Terminal output
+      description: Build or dev-server output, if the failure was in that stage.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: Windows 11 26200 / macOS 15.2 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`.
+      placeholder: v22.12.0
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App version or commit
+      description: The release tag, or `git rev-parse --short HEAD`.
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model selected in the tabs
+      placeholder: default / GPT-5 / other
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I ran Advanced → Self-test and included anything it reported.
+        - label: I checked that this is not a known limitation in the README.
+        - label: My log contains no cookie values, tokens, or absolute paths.
+          required: true

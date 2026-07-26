@@ -95,18 +95,38 @@ async function clear() {
   await flush();
 }
 
+/**
+ * URL patterns for the site itself, derived from the one list of its domains.
+ *
+ * The framing headers must be dropped for the chat product and for NOTHING
+ * else: an unfiltered listener also strips X-Frame-Options and frame-ancestors
+ * from every bank, identity provider and OAuth hop the user passes through
+ * inside a tab, which is a clickjacking hole we would be opening on their
+ * behalf.
+ */
+function siteUrlPatterns() {
+  const out = [];
+  for (const d of SITE.cookieDomains) {
+    out.push(`*://${d}/*`, `*://*.${d}/*`);
+  }
+  return out;
+}
+
 /** Start periodic + lifecycle flushing. Call once, after app ready. */
 function watch() {
   const s = get();
 
   // The site refuses to render in a frame unless we drop the framing headers:
   // it sends both X-Frame-Options and a CSP frame-ancestors directive.
-  s.webRequest.onHeadersReceived((details, cb) => {
+  s.webRequest.onHeadersReceived({ urls: siteUrlPatterns() }, (details, cb) => {
     const headers = { ...details.responseHeaders };
     for (const k of Object.keys(headers)) {
       const lk = k.toLowerCase();
       if (lk === 'x-frame-options') delete headers[k];
-      else if (lk === 'content-security-policy') {
+      // Report-only counts: Chromium enforces frame-ancestors from it for
+      // reporting purposes and it is what the site actually sends on some
+      // routes, so leaving it alone still blanked the tab.
+      else if (lk === 'content-security-policy' || lk === 'content-security-policy-report-only') {
         headers[k] = headers[k].map((v) => v.replace(/frame-ancestors[^;]*;?/gi, ''));
       }
     }
@@ -126,11 +146,22 @@ function watch() {
 
   flushTimer = setInterval(flush, 60000);
   flushTimer.unref?.();
+}
 
-  app.on('before-quit', () => {
+/**
+ * Stop the timer and write the cookie store out, once.
+ *
+ * Deliberately NOT wired to `before-quit` here: that event does not await
+ * promises, so a fire-and-forget flush loses the login on exactly the quit path
+ * it was meant to protect. main.js owns the single before-quit handler that
+ * holds the quit open until this resolves.
+ */
+async function dispose() {
+  if (flushTimer) {
     clearInterval(flushTimer);
-    flush();
-  });
+    flushTimer = null;
+  }
+  return flush();
 }
 
 /** Sanity check that the profile dir is actually writable. */
@@ -143,4 +174,15 @@ async function assertWritable() {
   return dir;
 }
 
-module.exports = { PARTITION, pinProfileDir, get, flush, status, clear, watch, assertWritable };
+module.exports = {
+  PARTITION,
+  pinProfileDir,
+  get,
+  flush,
+  status,
+  clear,
+  watch,
+  dispose,
+  assertWritable,
+  siteUrlPatterns,
+};

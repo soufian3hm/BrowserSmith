@@ -1,0 +1,13 @@
+# Not ours to format.
+node_modules/
+workspace/
+.profile/
+build-out/
+dist/
+out/
+assets/
+package-lock.json
+
+# Markdown is hand-laid-out here - README banners, the AUDIT tables and the
+# ASCII architecture diagram all lose their shape when prose is reflowed.
+*.md

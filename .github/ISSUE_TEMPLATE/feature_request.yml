@@ -1,0 +1,54 @@
+name: Feature request
+description: Something the app should be able to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you were trying to build, and where the app got in the way. Start
+        with the run that made you want this, not with the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - A mode or scaffold (a stack it should support)
+        - The agent loop (planning, review, auditing)
+        - Verification (install, run, screenshot, error reading)
+        - Patching and repair
+        - The chat driver
+        - UI and onboarding
+        - Packaging and distribution
+        - MCP server
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds, other modes, editing the generated project by hand.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: This is not already listed under Limitations in the README.
+          required: true
+        - label: I am willing to test a build of this.

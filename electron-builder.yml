@@ -1,0 +1,102 @@
+# electron-builder configuration for BrowserSmith.
+#
+#   npm run package        # every target configured for the current OS
+#   npm run package:win    # NSIS installer + portable .exe + zip
+#
+# Only the Windows targets have been built and run from this machine. The mac
+# and linux blocks are configured and syntactically live but UNTESTED - see the
+# notes on each.
+
+appId: com.soufian3hm.browsersmith
+productName: BrowserSmith
+copyright: Copyright (c) 2026 soufian3hm
+
+directories:
+  output: build-out
+  buildResources: assets
+
+# The webview `preload` attribute is handed a file:// URL built from __dirname
+# (src/main/preload-control.js), and a file:// URL that points inside app.asar
+# is not resolved through Electron's asar shim - the chat tabs would boot with
+# no DOM knowledge at all. Shipping unpacked keeps that path a real file.
+asar: false
+
+# An ALLOW-LIST, not a filter. Two directories must NEVER be packaged:
+#   .profile/  - the live logged-in Chromium session (auth cookies on disk)
+#   workspace/ - whatever the agents generated on this machine
+# They are excluded by construction (neither is listed) AND by the explicit
+# negations below, because one careless `- "**/*"` added later would otherwise
+# ship a stranger a signed-in ChatGPT session.
+files:
+  - package.json
+  - src/**/*.js
+  - src/**/*.html
+  - src/**/*.css
+  - assets/icon.ico
+  - assets/icon.png
+  - assets/icon.svg
+  - "!.profile"
+  - "!.profile/**"
+  - "!workspace"
+  - "!workspace/**"
+  - "!build-out/**"
+  - "!node_modules/.cache/**"
+  - "!**/*.map"
+
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+    # The self-extracting `portable` target unpacks to %TEMP% before it runs,
+    # so process.execPath is a temp folder there. A plain zip is the only
+    # Windows build where the login folder really does sit next to the .exe.
+    - target: zip
+      arch: [x64]
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false # per-user install: %LOCALAPPDATA% is writable, Program Files is not
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # The uninstaller must not take the user's generated projects or their login
+  # with it - both live beside the executable, not in the app folder proper.
+  deleteAppDataOnUninstall: false
+  artifactName: ${productName}-${version}-win-${arch}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-win-${arch}-portable.${ext}
+
+# UNTESTED from this machine (no macOS hardware in the loop). Unsigned and
+# un-notarized: Gatekeeper will refuse it on first launch until someone with a
+# Developer ID signs and notarizes a build.
+mac:
+  icon: assets/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
+  identity: null
+
+# UNTESTED from this machine. AppImage needs no install; the .deb is here for
+# apt users. Neither has been executed.
+linux:
+  icon: assets/png
+  category: Development
+  maintainer: soufian3hm <https://github.com/soufian3hm>
+  synopsis: Four ChatGPT tabs that plan, write, review and run a real project
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  artifactName: ${productName}-${version}-linux-${arch}.${ext}
+
+# Never auto-publish: releases are cut by hand from a tag.
+publish: null

@@ -8,7 +8,11 @@
  * one of them falls back to the geometry/role heuristics that carried this
  * driver before, so a redesign degrades instead of breaking. The user can also
  * override every selector at runtime via "pick mode" (click the element, we
- * remember it).
+ * remember it) - composer, output, send, stop, model and new chat all have a
+ * pick target, because any one of them going missing is enough to stall a run.
+ *
+ * When a hook really is gone the `health` command says so in one structured
+ * report instead of leaving the caller to discover it as a ten-minute timeout.
  *
  * This preload is sandboxed, so it cannot require('../shared/site'): the site
  * constants it needs (new-chat label, host check) are duplicated here as local
@@ -20,9 +24,33 @@ const state = {
   composerSelector: null, // user-picked override
   outputSelector: null,   // user-picked override
   sendSelector: null,     // user-picked override
+  stopSelector: null,     // user-picked override for the stop/abort control
   modelSelector: null,    // user-picked override for the model dropdown trigger
-  picking: null,          // 'composer' | 'output' | 'send' | 'model' | null
+  newchatSelector: null,  // user-picked override for the new-chat control
+  picking: null,          // one of HOOKS, or null
+  before: '',             // transcript snapshot taken by prepare()
+  beforeMessages: 0,      // message count at that snapshot
 };
+
+/** Every element the driver needs. Pick targets and `health` rows follow this. */
+const HOOKS = ['composer', 'output', 'send', 'stop', 'model', 'newchat'];
+
+const OVERRIDE_KEY = {
+  composer: 'composerSelector',
+  output: 'outputSelector',
+  send: 'sendSelector',
+  stop: 'stopSelector',
+  model: 'modelSelector',
+  newchat: 'newchatSelector',
+};
+
+/**
+ * How each hook was last located: 'picked' (user override), 'known' (a
+ * documented selector) or 'heuristic' (geometry/role guessing). `health`
+ * reports it, because "found by heuristic" is the early warning that the
+ * markup has moved and the next release will break outright.
+ */
+const via = { composer: null, output: null, send: null, stop: null, model: null, newchat: null };
 
 /**
  * Names ChatGPT currently exposes, plus the generic families, used to recognise
@@ -39,6 +67,16 @@ const MODEL_HINT =
 const MODEL_DENY =
   /\b(upgrade|subscribe|renew|billing|payment|invoice|credits?|auto-?reload|admin|workspace|get (plus|pro|go)|share|new chat|log ?in|log ?out|sign ?up|sign ?in|settings|profile|invite|help|archive|library|sora|gpts|projects)\b/i;
 
+/**
+ * Rows inside the open model menu that are not models: the upsell, and the
+ * entries that only open another submenu. Selecting either used to be reported
+ * as "model switched" while it had actually opened a paywall or left a submenu
+ * hanging over the composer. Phrases, not bare words, so a real model called
+ * "GPT-4o legacy" still lists.
+ */
+const MENU_DENY =
+  /(\b(upgrade|subscribe|billing|payment|invoice|credits?|manage|see (all )?plans?|learn more|try (plus|pro|go)|get (plus|pro|go))\b|legacy models|more models|other models|temporary chat)/i;
+
 /** Kept local because ../shared/site is unreachable from a sandboxed preload. */
 const NEW_CHAT_LABEL = /\bnew chat\b/i;
 
@@ -53,6 +91,22 @@ function q1(sel) {
   } catch {
     return null;
   }
+}
+
+/** matches() that survives a selector Chromium refuses to parse. */
+function matches(el, sel) {
+  try {
+    return !!el && el.matches(sel);
+  } catch {
+    return false;
+  }
+}
+
+/** sendToHost throws once the host webview is gone; nothing here may die of it. */
+function emit(channel, payload) {
+  try {
+    ipcRenderer.sendToHost(channel, payload);
+  } catch { /* host detached mid-run */ }
 }
 
 function cssPath(el) {
@@ -87,6 +141,44 @@ function visible(el, min = 8) {
 const isDisabled = (el) =>
   !!el && (el.disabled === true || el.getAttribute('aria-disabled') === 'true');
 
+/** textContent walks the subtree but never forces layout, unlike innerText. */
+const textLen = (el) => ((el && el.textContent) || '').length;
+
+const labelOf = (el) =>
+  `${(el && el.getAttribute('aria-label')) || ''} ${(el && el.title) || ''} ${(el && el.getAttribute('data-testid')) || ''}`;
+
+/**
+ * Element caches.
+ *
+ * findComposer/findOutputRoot/findSendButton/findModelTrigger all sit on the
+ * per-poll path (transcript, isGenerating, probe) and each costs a forced
+ * layout per candidate. Re-deriving them five times a second is a measurable
+ * share of a streaming tab's frame budget, so each is remembered for a moment
+ * and re-validated by isConnected - which is free, and is what a navigation or
+ * a re-render trips.
+ */
+const NODE_CACHE_MS = 500;
+let composerCache = { el: null, at: 0 };
+let rootCache = { el: null, at: 0 };
+let sendCache = { el: null, at: 0 };
+let modelCache = { el: null, at: 0 };
+
+const cacheHit = (c, ms = NODE_CACHE_MS) =>
+  c.el && c.el.isConnected && Date.now() - c.at < ms;
+
+/** A pick, a clear or a navigation makes every remembered node a guess. */
+function invalidateCaches() {
+  composerCache = { el: null, at: 0 };
+  rootCache = { el: null, at: 0 };
+  sendCache = { el: null, at: 0 };
+  modelCache = { el: null, at: 0 };
+  stopCache = { el: null, at: 0 };
+  msgCache = { at: 0, nodes: [] };
+  tCache = { at: 0, text: '' };
+}
+
+/* -------------------------------------------------------------- composer */
+
 /** ChatGPT's composer is a ProseMirror contenteditable, normally #prompt-textarea. */
 const COMPOSER_SELECTORS = [
   '#prompt-textarea',
@@ -96,67 +188,105 @@ const COMPOSER_SELECTORS = [
 
 /** The message input box. */
 function findComposer() {
+  if (cacheHit(composerCache)) return composerCache.el;
+  const found = locateComposer();
+  composerCache = { el: found, at: Date.now() };
+  return found;
+}
+
+function locateComposer() {
   if (state.composerSelector) {
-    const el = document.querySelector(state.composerSelector);
-    if (visible(el)) return el;
+    const el = q1(state.composerSelector);
+    if (visible(el)) { via.composer = 'picked'; return el; }
   }
   // Identity beats size: when we know exactly which node it is, do not put it
   // through the "is this big enough to be a composer" filter below.
   for (const sel of COMPOSER_SELECTORS) {
     const el = q1(sel);
-    if (visible(el)) return el;
+    if (visible(el)) { via.composer = 'known'; return el; }
   }
   const candidates = [
     ...document.querySelectorAll(
       '[contenteditable="true"], textarea, [role="textbox"]'
     ),
   ].filter((el) => visible(el, 40)); // a composer is never a tiny icon
-  if (!candidates.length) return null;
+  if (!candidates.length) { via.composer = null; return null; }
+  via.composer = 'heuristic';
   // The composer is the lowest one on screen (ChatGPT docks it to the bottom).
   return candidates.sort(
     (a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top
   )[0];
 }
 
-/** One turn of the conversation, newest last, in document order. */
-function messageNodes() {
+/* -------------------------------------------------------------- messages */
+
+/** Long enough to collapse five-times-a-second callers, short enough to feel live. */
+const MSG_CACHE_MS = 250;
+let msgCache = { at: 0, nodes: [] };
+
+/**
+ * One turn of the conversation, newest last, in document order.
+ *
+ * querySelectorAll over a 60KB transcript is cheap next to innerText but not
+ * free, and every poll asks for it several times. The list is remembered for a
+ * quarter second and thrown away the moment its tail has been unmounted -
+ * which is exactly what a virtualized transcript does as it scrolls.
+ */
+function messageNodes(force) {
+  if (!force && Date.now() - msgCache.at < MSG_CACHE_MS) {
+    const n = msgCache.nodes;
+    if (!n.length || n[n.length - 1].isConnected) return n;
+  }
   const byRole = [...document.querySelectorAll('[data-message-author-role]')];
-  if (byRole.length) return byRole;
-  return [...document.querySelectorAll('article[data-testid^="conversation-turn"]')];
+  const nodes = byRole.length
+    ? byRole
+    : [...document.querySelectorAll('article[data-testid^="conversation-turn"]')];
+  msgCache = { at: Date.now(), nodes };
+  return nodes;
 }
+
+/* ----------------------------------------------------------- output root */
 
 /** The scroll container holding the conversation. */
 function findOutputRoot() {
+  if (cacheHit(rootCache)) return rootCache.el;
+  const found = locateOutputRoot();
+  rootCache = { el: found, at: Date.now() };
+  return found;
+}
+
+function scrollableAncestor(start) {
+  for (let n = start; n && n.parentElement; n = n.parentElement) {
+    const s = getComputedStyle(n);
+    if (
+      (s.overflowY === 'auto' || s.overflowY === 'scroll') &&
+      n.scrollHeight > n.clientHeight &&
+      n.getBoundingClientRect().height > 200
+    ) {
+      return n;
+    }
+  }
+  return null;
+}
+
+function locateOutputRoot() {
   if (state.outputSelector) {
-    const el = document.querySelector(state.outputSelector);
-    if (el) return el;
+    const el = q1(state.outputSelector);
+    if (el) { via.output = 'picked'; return el; }
   }
   // Anchor on a real message when there is one: the thread's scroller is its
   // nearest scrollable ancestor, and that is true whatever the layout does.
   const msgs = messageNodes();
-  const scrollableAncestor = (start) => {
-    for (let n = start; n && n.parentElement; n = n.parentElement) {
-      const s = getComputedStyle(n);
-      if (
-        (s.overflowY === 'auto' || s.overflowY === 'scroll') &&
-        n.scrollHeight > n.clientHeight &&
-        n.getBoundingClientRect().height > 200
-      ) {
-        return n;
-      }
-    }
-    return null;
-  };
   if (msgs.length) {
     const root = scrollableAncestor(msgs[msgs.length - 1]);
-    if (root) return root;
+    if (root) { via.output = 'known'; return root; }
   }
 
   const composer = findComposer();
   const fromComposer = composer && composer.parentElement
     ? scrollableAncestor(composer.parentElement)
     : null;
-  if (fromComposer) return fromComposer;
+  if (fromComposer) { via.output = 'heuristic'; return fromComposer; }
 
   // Last resort: the largest scrollable region on the page.
   const scrollers = [...document.querySelectorAll('div, main, section')]
@@ -170,8 +300,9 @@ function findOutputRoot() {
       const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
       return ra.width * ra.height - rb.width * rb.height;
     });
-  if (scrollers.length) return scrollers.pop();
+  if (scrollers.length) { via.output = 'heuristic'; return scrollers.pop(); }
 
+  via.output = null;
   return document.querySelector('main') || document.body;
 }
 
@@ -186,31 +317,78 @@ function focusEl(el) {
 }
 
 /**
+ * How much text one synthetic paste may carry.
+ *
+ * ProseMirror re-parses and re-lays-out the whole document per paste, so a
+ * single 30KB drop blocks the tab's renderer for seconds - and every composer
+ * read that follows times out. The main process chunks for the same reason
+ * (main.js TYPE_CHUNK); this in-page path is the self-test fallback and has to
+ * survive the same document sizes.
+ */
+const PASTE_CHUNK = 2000;
+
+/**
+ * Split on line boundaries where possible. Concatenating the pieces reproduces
+ * the input byte for byte - a chunk that ends mid-fence gets auto-formatted
+ * into something we never wrote.
+ */
+function chunksOf(text, max) {
+  const src = String(text);
+  const out = [];
+  let start = 0;
+  while (start < src.length) {
+    let end = Math.min(start + max, src.length);
+    if (end < src.length) {
+      const nl = src.lastIndexOf('\n', end);
+      if (nl > start) end = nl + 1; // keep the newline with the chunk it ends
+    }
+    out.push(src.slice(start, end));
+    start = end;
+  }
+  return out.length ? out : [''];
+}
+
+function pasteInto(el, chunk) {
+  const dt = new DataTransfer();
+  dt.setData('text/plain', chunk);
+  el.dispatchEvent(
+    new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt })
+  );
+}
+
+/**
  * Insert text without triggering the composer's markdown/slash-command handlers
  * more than necessary. beforeinput+insertText is what a real paste looks like to
  * ProseMirror-style editors.
+ *
+ * Returns whether the text demonstrably landed, so callers can fail loudly
+ * instead of sending an empty prompt and waiting three minutes for a reply.
  */
 function insertText(el, text) {
   focusEl(el);
-  if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+  if (isField(el)) {
     const setter = Object.getOwnPropertyDescriptor(
       el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       'value'
     ).set;
     setter.call(el, text);
     el.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
+    return (el.value || '') === text;
   }
-  // contenteditable: clear then paste.
+  // contenteditable: clear then paste, one chunk at a time.
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
-  const dt = new DataTransfer();
-  dt.setData('text/plain', text);
-  el.dispatchEvent(
-    new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt })
-  );
-  // Fallback for editors that ignore synthetic paste.
-  if (!el.textContent.trim()) document.execCommand('insertText', false, text);
+  for (const chunk of chunksOf(text, PASTE_CHUNK)) {
+    const grewFrom = textLen(el);
+    pasteInto(el, chunk);
+    // Some builds ignore a synthetic paste outright. insertText is the other
+    // synthetic path and is accepted more often; trying it per chunk is what
+    // stops one rejected piece from silently truncating the prompt.
+    if (textLen(el) <= grewFrom && chunk.trim()) {
+      document.execCommand('insertText', false, chunk);
+    }
+  }
+  return !text.trim() || !!(el.textContent || '').trim();
 }
 
 /* -------------------------------------------------------------- generating */
@@ -232,6 +410,16 @@ let stopCache = { el: null, at: 0 };
 const STOP_SWEEP_MS = 700;
 
 /**
+ * When we last actually saw a stop button.
+ *
+ * Distinct from "did this call find one": the sweep is throttled, so a single
+ * missed frame returns null for up to STOP_SWEEP_MS without anything having
+ * changed on the page. Treating that as "idle" turned one re-render into
+ * several consecutive idle votes and returned a partial reply.
+ */
+let lastStopSeenAt = 0;
+
+/**
  * Is this still a stop control?
  *
  * Identity is re-checked, not assumed: the site swaps stop back to send by
@@ -241,13 +429,30 @@ const STOP_SWEEP_MS = 700;
  */
 function stillStop(el) {
   if (!el || !el.isConnected) return false;
+  if (state.stopSelector && matches(el, state.stopSelector)) return true;
   for (const sel of STOP_SELECTORS) {
-    try {
-      if (el.matches(sel)) return true;
-    } catch { /* a selector Chromium refuses to parse */ }
+    if (matches(el, sel)) return true;
   }
   const label = `${el.getAttribute('aria-label') || ''} ${el.title || ''}`;
   return /\bstop\b/i.test(label);
+}
+
+/**
+ * Only a control in the composer's own band counts.
+ *
+ * awaitReply refuses to return while this reports generating, so a permanently
+ * mounted "Stop" elsewhere on the page - read-aloud playback, a modal, a
+ * sharing control - would turn every reply into a full-timeout abandon.
+ * ChatGPT's read-aloud button is in this DOM and its aria-label contains
+ * "stop", which is exactly how that failure reached production. Anchoring on
+ * the composer costs us nothing worse than falling back to the timing path.
+ */
+function nearComposer(el, slack = 240) {
+  const c = findComposer();
+  if (!c) return true; // no composer to judge against: do not veto
+  const r = el.getBoundingClientRect();
+  const cr = c.getBoundingClientRect();
+  return r.top < cr.bottom + slack && r.bottom > cr.top - slack;
 }
 
 function findStopButton() {
@@ -256,12 +461,29 @@ function findStopButton() {
   // handful of attribute reads, while sweeping every button on the page costs a
   // forced layout per button and is what makes the tab feel frozen mid-stream.
   const cached = stopCache.el;
-  if (stillStop(cached) && visible(cached)) return cached;
+  if (stillStop(cached) && visible(cached) && nearComposer(cached)) {
+    stopCache.at = Date.now();
+    lastStopSeenAt = stopCache.at;
+    via.stop = via.stop || 'known';
+    return cached;
+  }
+
+  if (state.stopSelector) {
+    const el = q1(state.stopSelector);
+    if (visible(el) && nearComposer(el)) {
+      stopCache = { el, at: Date.now() };
+      lastStopSeenAt = stopCache.at;
+      via.stop = 'picked';
+      return el;
+    }
+  }
 
   for (const sel of STOP_SELECTORS) {
     const el = q1(sel);
-    if (visible(el)) {
+    if (visible(el) && nearComposer(el)) {
       stopCache = { el, at: Date.now() };
+      lastStopSeenAt = stopCache.at;
+      via.stop = 'known';
       return el;
     }
   }
@@ -273,13 +495,26 @@ function findStopButton() {
   const found =
     [...document.querySelectorAll('button, [role="button"]')].find((b) => {
       const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
-      return /\bstop\b/i.test(label) && visible(b);
+      return /\bstop\b/i.test(label) && visible(b) && nearComposer(b);
     }) || null;
   stopCache = { el: found, at: Date.now() };
+  if (found) {
+    lastStopSeenAt = stopCache.at;
+    via.stop = 'heuristic';
+  }
   return found;
 }
 
 const isGenerating = () => !!findStopButton();
+
+/**
+ * How long after the last sighting a missing stop button still means "unknown".
+ * Comfortably longer than STOP_SWEEP_MS so the sweep throttle alone can never
+ * be mistaken for the answer having finished.
+ */
+const STOP_GRACE_MS = 3000;
+
+/* ------------------------------------------------------------------- send */
 
 /**
  * The send control. Preferred over Enter: Enter can insert a newline in a
@@ -289,17 +524,32 @@ const SEND_DENY =
   /\b(stop|voice|dictate|dictation|microphone|mic|speech|read aloud|attach|upload|file|image|photo|camera|tools?|search|model|menu|settings|scroll|copy|edit|regenerate)\b/i;
 
 function findSendButton() {
+  // Short cache only, and never trusted once the node has become the stop
+  // button: ChatGPT reuses the same element for both, and handing back the
+  // abort control as "send" kills the answer we are waiting for.
+  if (cacheHit(sendCache, 400) && !stillStop(sendCache.el) && !isDisabled(sendCache.el)) {
+    return sendCache.el;
+  }
+  const found = locateSendButton();
+  sendCache = { el: found, at: Date.now() };
+  return found;
+}
+
+function locateSendButton() {
   if (state.sendSelector) {
-    const el = document.querySelector(state.sendSelector);
-    if (visible(el)) return el;
+    const el = q1(state.sendSelector);
+    if (visible(el) && !stillStop(el)) { via.send = 'picked'; return el; }
   }
   // While a reply streams this testid belongs to the stop button instead, so an
   // exact match on "send-button" can never hand back the abort control.
   const explicit = q1('[data-testid="send-button"]');
-  if (visible(explicit) && !isDisabled(explicit)) return explicit;
+  if (visible(explicit) && !isDisabled(explicit) && !stillStop(explicit)) {
+    via.send = 'known';
+    return explicit;
+  }
 
   const composer = findComposer();
-  if (!composer) return null;
+  if (!composer) { via.send = null; return null; }
   const cr = composer.getBoundingClientRect();
 
   // The model dropdown and the stop button both sit in reach of the composer
@@ -310,15 +560,14 @@ function findSendButton() {
 
   const all = [...document.querySelectorAll('button, [role="button"]')].filter((b) => {
     if (!visible(b) || isDisabled(b) || b === modelTrigger || b === stop) return false;
-    const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''} ${b.getAttribute('data-testid') || ''}`;
-    return !SEND_DENY.test(label);
+    return !SEND_DENY.test(labelOf(b));
   });
 
   const byLabel = all.filter((b) => {
     const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
     return /\b(send|submit)\b/i.test(label);
   });
-  if (byLabel.length) return byLabel[0];
+  if (byLabel.length) { via.send = 'known'; return byLabel[0]; }
 
   const near = all.filter((b) => {
     const r = b.getBoundingClientRect();
@@ -334,9 +583,33 @@ function findSendButton() {
   const pool = iconOnly.length ? iconOnly : near.filter((b) => !MODEL_HINT.test(b.textContent || ''));
 
   // Rightmost wins - send sits at the end of the toolbar.
-  return pool.sort(
+  const found = pool.sort(
     (a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right
   ).pop() || null;
+  via.send = found ? 'heuristic' : null;
+  return found;
+}
+
+/**
+ * Cheap positive "not generating any more" vote.
+ *
+ * ChatGPT swaps stop back to send when it finishes, so a live send control is
+ * evidence the answer is done - evidence that absence-of-stop alone cannot
+ * give us, since absence is also what a renamed testid looks like. Deliberately
+ * only the documented selector plus the cached node: this runs every poll and
+ * must not trigger the whole-page button sweep.
+ */
+function sendReady() {
+  const explicit = q1('[data-testid="send-button"]');
+  if (explicit && visible(explicit) && !isDisabled(explicit) && !stillStop(explicit)) return true;
+  const cached = sendCache.el;
+  return !!(
+    cached &&
+    cached.isConnected &&
+    !stillStop(cached) &&
+    !isDisabled(cached) &&
+    visible(cached)
+  );
 }
 
 function pressEnter(el) {
@@ -367,6 +640,26 @@ const HEADER_SEL =
   'header, nav, [role="banner"], [role="navigation"], [role="toolbar"], [data-testid*="header"]';
 
 /**
+ * Would clicking this take money, or leave the conversation?
+ *
+ * The model scan is the one place in this file that clicks something it merely
+ * guessed at, so the guess has to be provably harmless. Anything that navigates
+ * is a destination (pricing, settings, another chat), not a menu opener, and a
+ * billing word anywhere in the accessible name is disqualifying on its own.
+ */
+function isBillingish(el) {
+  if (!el) return true;
+  if (MODEL_DENY.test(labelOf(el))) return true;
+  if (MENU_DENY.test((el.textContent || '').trim())) return true;
+  const link = el.closest('a[href]');
+  if (link) {
+    const href = link.getAttribute('href') || '';
+    if (href && href !== '#' && !/^javascript:/i.test(href)) return true;
+  }
+  return !!el.closest('[data-testid*="upgrade" i], [data-testid*="billing" i], [data-testid*="account" i]');
+}
+
+/**
  * The control that opens the model list. Its label is the currently-selected
  * model, so we match on model-ish text - but unlike Notion, ChatGPT puts it at
  * the TOP of the conversation, not in the composer's toolbar. Searching the
@@ -376,18 +669,29 @@ const HEADER_SEL =
  * Must never call findSendButton: that one calls us, to exclude us.
  */
 function findModelTrigger() {
+  if (cacheHit(modelCache)) return modelCache.el;
+  const found = locateModelTrigger();
+  modelCache = { el: found, at: Date.now() };
+  return found;
+}
+
+/** Below this the candidate is a coincidence, not a dropdown. */
+const MODEL_SCORE_FLOOR = 2;
+
+function locateModelTrigger() {
   if (state.modelSelector) {
-    const el = document.querySelector(state.modelSelector);
-    if (visible(el)) return el;
+    const el = q1(state.modelSelector);
+    if (visible(el)) { via.model = 'picked'; return el; }
   }
   for (const sel of MODEL_SELECTORS) {
     const el = q1(sel);
-    if (visible(el)) return el;
+    if (visible(el) && !isBillingish(el)) { via.model = 'known'; return el; }
   }
 
   // Only on a conversation page. On /admin/billing the scan matched a "Turn on
   // auto-reload" button (\bauto\b) and clicking it opened billing settings.
   if (!/^\/(c\/|g\/|$)/.test(location.pathname) && location.pathname !== '/') {
+    via.model = null;
     return null;
   }
 
@@ -403,6 +707,7 @@ function findModelTrigger() {
         b.hasAttribute('aria-expanded') ||
         b.getAttribute('role') === 'combobox'
     )
+    .filter((b) => !isBillingish(b))
     .map((b) => ({ b, t: (b.textContent || '').trim() }))
     .filter(({ t }) => {
       if (!t || t.length >= 40 || MODEL_DENY.test(t)) return false;
@@ -424,7 +729,23 @@ function findModelTrigger() {
     })
     .sort((a, b) => b.score - a.score || a.top - b.top || a.left - b.left);
 
-  return scored.length ? scored[0].b : null;
+  // A weak best candidate is worse than none: the caller can say "use Pick
+  // Model", but it cannot undo a click on whatever this returned.
+  if (!scored.length || scored[0].score < MODEL_SCORE_FLOOR) { via.model = null; return null; }
+  via.model = 'heuristic';
+  return scored[0].b;
+}
+
+/** Refuse to click a trigger that could cost money, even a user-picked one. */
+function safeTrigger() {
+  const trigger = findModelTrigger();
+  if (!trigger) throw new Error('model dropdown not found - use Pick Model');
+  if (isBillingish(trigger)) {
+    throw new Error(
+      'the chosen model control navigates or looks like billing - refusing to click it; use Pick Model'
+    );
+  }
+  return trigger;
 }
 
 function openMenuItems() {
@@ -435,6 +756,9 @@ function openMenuItems() {
   ].filter(visible);
   return items.map((el) => ({ el, label: (el.innerText || '').trim().split('\n')[0] }));
 }
+
+/** A row in the open menu that is a model, not an upsell or a submenu. */
+const isModelLabel = (l) => !!l && MODEL_HINT.test(l) && !MODEL_DENY.test(l) && !MENU_DENY.test(l);
 
 /**
  * Close whatever popover we opened. Escape alone is not enough for every
@@ -452,8 +776,7 @@ async function closeMenu() {
 
 /** Open the dropdown, read every model, close it again. Non-destructive. */
 async function listModels() {
-  const trigger = findModelTrigger();
-  if (!trigger) throw new Error('model dropdown not found - use Pick Model');
+  const trigger = safeTrigger();
   const current = (trigger.textContent || '').trim();
 
   trigger.click();
@@ -462,50 +785,72 @@ async function listModels() {
   // exist wins the race too early: they mount before their labels render, so we
   // read a list of empty strings and conclude there are no models.
   let labels = [];
+  let opened = false;
   for (let i = 0; i < 40; i++) {
     await sleep(150);
-    labels = openMenuItems()
-      .map((it) => it.label)
-      .filter((l) => l && MODEL_HINT.test(l));
+    const items = openMenuItems();
+    if (items.length) opened = true;
+    labels = items.map((it) => it.label).filter(isModelLabel);
     if (labels.length >= 2) {
       await sleep(250); // let the rest of the list paint
-      labels = openMenuItems()
-        .map((it) => it.label)
-        .filter((l) => l && MODEL_HINT.test(l));
+      labels = openMenuItems().map((it) => it.label).filter(isModelLabel);
       break;
     }
   }
   await closeMenu();
-  return { current, models: [...new Set(labels)] };
+  // `opened` separates "this is not the model trigger" from "the menu opened
+  // and holds nothing we recognise as a model" - one is a pick-mode problem,
+  // the other is a MODEL_HINT problem, and they need different fixes.
+  return { current, models: [...new Set(labels)], opened };
 }
 
 /** Open the dropdown and click the entry matching `name`. */
 async function selectModel(name) {
-  const trigger = findModelTrigger();
-  if (!trigger) throw new Error('model dropdown not found - use Pick Model');
-  if ((trigger.textContent || '').trim().toLowerCase() === name.toLowerCase()) {
-    return { selected: name, alreadyActive: true };
+  const trigger = safeTrigger();
+  const current = (trigger.textContent || '').trim();
+  if (current.toLowerCase() === String(name).toLowerCase()) {
+    return { selected: current, alreadyActive: true };
   }
   trigger.click();
 
   let match = null;
   for (let i = 0; i < 20 && !match; i++) {
     await sleep(100);
-    const items = openMenuItems();
+    const items = openMenuItems().filter((it) => isModelLabel(it.label));
     match =
-      items.find((it) => it.label.toLowerCase() === name.toLowerCase()) ||
-      items.find((it) => it.label.toLowerCase().includes(name.toLowerCase()));
+      items.find((it) => it.label.toLowerCase() === String(name).toLowerCase()) ||
+      items.find((it) => it.label.toLowerCase().includes(String(name).toLowerCase()));
   }
   if (!match) {
     await closeMenu();
     throw new Error(`model "${name}" not in the list`);
   }
   match.el.click();
-  await sleep(400);
-  return { selected: (findModelTrigger()?.textContent || '').trim() || name };
+
+  // Give the trigger a moment to relabel, then always close: a click that
+  // opened a submenu instead of switching models used to leave that submenu
+  // sitting over the composer for the next prepare/clickSend.
+  let selected = current;
+  for (let i = 0; i < 12; i++) {
+    await sleep(200);
+    selected = (findModelTrigger()?.textContent || '').trim();
+    if (selected && selected !== current) break;
+  }
+  const stillOpen = openMenuItems().length > 0;
+  await closeMenu();
+  if (selected === current && stillOpen) {
+    // The menu is still up, so the click opened something rather than choosing
+    // something. Reporting the old model as the new one is how a run silently
+    // used the wrong model for every file.
+    throw new Error(`"${name}" opened a submenu instead of switching model`);
+  }
+  return { selected: selected || name, verified: selected !== current };
 }
 
 /* ---------------------------------------------------------------- reading */
+
+/** Toolbar rows ChatGPT renders INSIDE a <pre>, above the code itself. */
+const CODE_TOOLBAR = /^(copy|copy code|edit|copy to clipboard)$/i;
 
 /**
  * Re-fence a rendered code block.
@@ -514,13 +859,31 @@ async function selectModel(name) {
  * inside the block - and it carries no backticks. Handing that straight to the
  * orchestrator would write "python/Copy/Edit" into the top of every generated
  * file, and protocol.unfence() would have nothing to strip. So we rebuild the
- * fence from the <code> element alone.
+ * fence from the <code> element alone, and when there is no <code> element we
+ * strip the toolbar rows by hand rather than fencing chrome into the file.
  */
 function fenceOf(pre) {
   const code = pre.querySelector('code');
-  const body = ((code || pre).innerText || '').replace(/\s+$/, '');
-  const lang = (code && (String(code.className).match(/language-([\w+#-]+)/) || [])[1]) || '';
-  return '```' + lang + '\n' + body + '\n```';
+  if (code) {
+    const body = (code.innerText || '').replace(/\s+$/, '');
+    const lang = (String(code.className).match(/language-([\w+#-]+)/) || [])[1] || '';
+    return '```' + lang + '\n' + body + '\n```';
+  }
+
+  const lines = (pre.innerText || '').replace(/\s+$/, '').split('\n');
+  let i = 0;
+  let lang = '';
+  // A lone word followed by Copy/Edit is the language chip, not code. Requiring
+  // the toolbar row after it is what stops a real first line being eaten.
+  if (
+    lines[0] && /^[\w+#-]{1,20}$/.test(lines[0].trim()) &&
+    CODE_TOOLBAR.test((lines[1] || '').trim())
+  ) {
+    lang = lines[0].trim();
+    i = 1;
+  }
+  while (lines[i] && CODE_TOOLBAR.test(lines[i].trim())) i++;
+  return '```' + lang + '\n' + lines.slice(i).join('\n') + '\n```';
 }
 
 /**
@@ -557,9 +920,7 @@ function readMessage(el) {
  */
 const messageCache = new WeakMap();
 
-/** textContent walks the subtree but never forces layout, unlike innerText. */
-const stamp = (el) =>
-  (el.textContent || '').length + ':' + el.getElementsByTagName('pre').length;
+const stamp = (el) => textLen(el) + ':' + el.getElementsByTagName('pre').length;
 
 function readMessageCached(el, live) {
   // The newest message is the one being written, so it is always read fresh:
@@ -587,7 +948,7 @@ let tCache = { at: 0, text: '' };
  */
 function transcript(force) {
   if (!force && Date.now() - tCache.at < TRANSCRIPT_TTL_MS) return tCache.text;
-  const nodes = messageNodes();
+  const nodes = messageNodes(force);
   let text;
   if (nodes.length) {
     const last = nodes.length - 1;
@@ -603,6 +964,39 @@ function transcript(force) {
   }
   tCache = { at: Date.now(), text };
   return text;
+}
+
+/**
+ * Conversation size without touching innerText.
+ *
+ * `chars` runs before every single round (rotateIfBloated) and probe is polled
+ * by autopilot, so the old transcript().length forced a full-document layout
+ * flush in a tab that may be mid-stream - the same jank that makes a streaming
+ * transcript look frozen and a partial reply look settled. textContent walks
+ * the same subtree and forces nothing.
+ */
+function transcriptSize() {
+  const nodes = messageNodes();
+  if (!nodes.length) return tCache.text.length;
+  let n = 0;
+  for (const el of nodes) n += textLen(el);
+  return n;
+}
+
+/** The newest messages only - autopilot wants a tail, not the whole thread. */
+function transcriptTail(chars) {
+  const want = Math.max(1, chars || 1200);
+  const nodes = messageNodes();
+  if (!nodes.length) {
+    const t = transcript();
+    return t.slice(Math.max(0, t.length - want));
+  }
+  let out = '';
+  for (let i = nodes.length - 1; i >= 0 && out.length < want; i--) {
+    const one = readMessageCached(nodes[i], i === nodes.length - 1);
+    out = one + (out ? '\n\n' + out : '');
+  }
+  return out.slice(Math.max(0, out.length - want));
 }
 
 /* ---------------------------------------------------- main-process typing */
@@ -644,11 +1038,29 @@ function emptyComposer(el) {
   if (active !== el && !el.contains(active)) return false;
   document.execCommand('selectAll', false, null);
   document.execCommand('delete', false, null);
-  return true;
+  if (!composerValue(el).trim()) return true;
+  // execCommand needs the frame to own focus; when it does not, put the
+  // selection over the element explicitly and try once more before giving up.
+  try {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.addRange(range);
+    document.execCommand('delete', false, null);
+  } catch { /* no selection API in this frame state */ }
+  return !composerValue(el).trim();
 }
 
 /** Budget for prepare. Must stay well inside the renderer's own 15s guard. */
 const PREPARE_WAIT_MS = 6000;
+
+/**
+ * Leftover this big is a whole previous prompt, not a placeholder node.
+ * Appending the next prompt to it sends both at once, and the caller's landing
+ * check passes on the concatenation, so nothing downstream ever notices.
+ */
+const LEFTOVER_FATAL = 200;
 
 /**
  * Focus and empty the composer, and snapshot the transcript.
@@ -670,7 +1082,9 @@ async function prepare() {
     if (isEditable(el)) { composer = el; break; }
     if (Date.now() >= deadline) {
       throw new Error(
-        el ? 'composer found but not editable' : 'composer not found - use Pick Composer'
+        el
+          ? 'composer found but not editable - use Pick Composer'
+          : `composer not found - use Pick Composer${missingNote()}`
       );
     }
     await sleep(200);
@@ -691,10 +1105,24 @@ async function prepare() {
   }
 
   state.before = transcript(true);
-  // `cleared` is reported rather than thrown: some composers render their
-  // placeholder as a real node, and refusing to prepare over that would fail
-  // every prompt instead of just this one.
-  return { before: state.before.length, cleared: !leftover, leftover: leftover.length };
+  state.beforeMessages = messageNodes().length;
+
+  // Small leftovers are reported rather than thrown: some composers render
+  // their placeholder as a real node, and refusing to prepare over that would
+  // fail every prompt instead of just this one. A leftover the size of a prompt
+  // is a different animal - that one gets sent twice if we say nothing.
+  if (leftover.length >= LEFTOVER_FATAL) {
+    throw new Error(
+      `composer still holds ${leftover.length} chars of the previous prompt ` +
+      '- refusing to append; focus the app window or clear the composer'
+    );
+  }
+  return {
+    before: state.before.length,
+    messages: state.beforeMessages,
+    cleared: !leftover,
+    leftover: leftover.length,
+  };
 }
 
 /** Click the send control. Returns false if we could not find one. */
@@ -735,12 +1163,26 @@ const CHROME =
  * The message we sent is rendered into the transcript, so raw "text added since
  * we sent" always begins with our own words. We anchor on the tail of the
  * prompt and take what follows.
+ *
+ * The search runs FORWARD from the pre-send baseline, never backward from the
+ * end: lastIndexOf finds the model's own restatement of the anchor, and our
+ * build prompts start with "PATH: <path>" and end with the "Output only the
+ * complete contents of..." instruction - both of which a reply commonly quotes.
+ * Anchoring on that occurrence silently threw away everything written before
+ * it, which on the small-answer path is most of the file.
  */
-function afterEcho(text, full) {
+function afterEcho(text, full, before) {
   const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
+  // A little slack, because earlier turns can reflow between the snapshot and
+  // now (a "Show more" collapsing) and shift the baseline by a few characters.
+  // Never more than a quarter of it, though: on a short baseline a fixed slack
+  // reaches back past the start, and then an anchor sitting in the PREVIOUS
+  // turn is accepted as this turn's echo.
+  const baseline = String(before || '').length;
+  const from = Math.max(0, baseline - Math.min(200, Math.floor(baseline / 4)));
   for (const anchor of [lines[lines.length - 1], lines[0]]) {
     if (!anchor || anchor.length < 8) continue;
-    const i = full.lastIndexOf(anchor);
+    const i = full.indexOf(anchor, from);
     if (i !== -1) return full.slice(i + anchor.length);
   }
   return null;
@@ -798,36 +1240,71 @@ function freshAnswerNode(wanted) {
   return null;
 }
 
-/** Past this, rebuilding the whole transcript per poll is what wedges the tab. */
-const BIG_TRANSCRIPT = 16000;
-const BIG_ANSWER = 6000;
+/**
+ * The newest message the HUMAN typed.
+ *
+ * Autopilot otherwise has to slice it out of a transcript diff and strip the
+ * planner's own answer back off, which mis-fires whenever the roles interleave.
+ * When the markup carries author roles - it does on ChatGPT today - the newest
+ * user turn is simply readable, so read it. Returns '' when roles are absent,
+ * which tells the caller to fall back to the diff.
+ */
+function lastUserMessage() {
+  const nodes = messageNodes();
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const role = nodes[i].getAttribute('data-message-author-role');
+    if (!role) return ''; // no roles in this markup - caller falls back
+    if (role !== 'user') continue;
+    const text = readMessage(nodes[i]).trim();
+    // Our own relay prompts are user turns too; autopilot filters those itself,
+    // but returning the newest one regardless keeps this function honest.
+    return text;
+  }
+  return '';
+}
 
 /**
  * The reply so far.
  *
- * Once the conversation (or the answer alone) is large, read ONLY the newest
- * message. The caller wants the text after our echo and nothing else, and that
- * IS the newest message - while re-deriving the other 60KB several times a
- * second is precisely what starved the tab and made a long reply arrive
- * truncated. Below that size the original whole-transcript diff still runs,
- * because it also copes with markup that carries no author roles.
+ * When the markup carries author roles - it always does on ChatGPT today - the
+ * answer node IS the reply, so read only that. It is both the correct answer
+ * (no string anchoring to mis-slice) and the cheap one: re-deriving the other
+ * 60KB several times a second is precisely what starved the tab and made a long
+ * reply arrive truncated. The whole-transcript diff below is the fallback for
+ * markup with no roles at all.
  */
 function replyDelta(text, before, echoSeen, wanted) {
   if (echoSeen) {
     const answer = freshAnswerNode(wanted);
-    if (
-      answer &&
-      (tCache.text.length >= BIG_TRANSCRIPT ||
-        (answer.textContent || '').length >= BIG_ANSWER)
-    ) {
-      return readMessage(answer);
-    }
+    if (answer) return readMessage(answer);
   }
   const full = transcript();
-  const delta = echoSeen ? afterEcho(text, full) : null;
-  if (delta !== null) return delta;
-  return full.startsWith(before) ? full.slice(before.length) : full;
+  if (echoSeen) {
+    const delta = afterEcho(text, full, before);
+    if (delta !== null) return delta;
+  }
+  if (full.startsWith(before)) return full.slice(before.length);
+  // The baseline no longer prefixes the transcript (virtualization unmounted
+  // the older turns), so there is no honest delta to give. Returning `full`
+  // here handed the caller the WHOLE conversation as one reply, and
+  // protocol.extractBody then glued every fenced block in it - several earlier
+  // files - into the file being written. Waiting and timing out is recoverable;
+  // that was not.
+  return '';
 }
+
+/** No output change for this long while still generating means the tab is wedged. */
+const STUCK_MS = 300000;
+
+/** Consecutive stop-free polls (200ms each) before we believe the answer ended. */
+const IDLE_TICKS = 15;            // 3s, with no corroboration
+const IDLE_TICKS_SEND_READY = 8;  // 1.6s, with the send control back on screen
+
+/** How long a prompt may take to appear in the transcript before we call it lost. */
+const DELIVERY_GRACE_MS = 90000;
+
+/** Live counter cadence. Cheap, but not per-poll cheap. */
+const PROGRESS_MS = 1000;
 
 /**
  * Wait for a genuine reply.
@@ -842,10 +1319,7 @@ function replyDelta(text, before, echoSeen, wanted) {
  * away we trust a much shorter quiet period. If we never see it at all (missing
  * testid, reply finished between polls) the original timing still decides.
  */
-/** No output change for this long while still generating means the tab is wedged. */
-const STUCK_MS = 300000;
-
-async function awaitReply(opts = {}) {
+async function awaitReply(opts = {}, driveId = null) {
   const text = opts.text || '';
   // Reasoning can sit on an unchanged status line for seconds at a time, so
   // "quiet" has to be longer than the gap between its steps.
@@ -854,6 +1328,7 @@ async function awaitReply(opts = {}) {
   // we are done, this is only a backstop against a dead tab.
   const timeoutMs = opts.timeoutMs ?? 600000;
   const before = state.before ?? '';
+  const beforeMessages = state.beforeMessages ?? 0;
   const started = Date.now();
 
   // 1. Wait for our own message to show up in the transcript.
@@ -869,7 +1344,20 @@ async function awaitReply(opts = {}) {
   let lastDelta = null;
   let lastChange = Date.now();
   let sawGenerating = false;
-  let idleTicks = 0; // consecutive polls with no stop button visible
+  let idleTicks = 0; // consecutive polls with the stop button confidently gone
+  let lastProgress = 0;
+
+  const finish = (out, why) => {
+    emit('replyEnd', {
+      id: driveId,
+      why,
+      chars: out.length,
+      sawGenerating,
+      idleTicks,
+      ms: Date.now() - started,
+    });
+    return out;
+  };
 
   while (Date.now() - started < timeoutMs) {
     await sleep(200);
@@ -880,7 +1368,11 @@ async function awaitReply(opts = {}) {
     if (generating) {
       sawGenerating = true;
       idleTicks = 0;
-    } else {
+    } else if (Date.now() - lastStopSeenAt > STOP_GRACE_MS) {
+      // Only count an idle tick once the stop button has been absent longer
+      // than the sweep throttle can explain. A single missed selector hit used
+      // to buy three or four "idle" votes for free, which - with a real 500ms
+      // gap between tokens - was enough to return half a file.
       idleTicks++;
     }
     // A prompt that took longer than step 1 to render is not a lost cause: the
@@ -904,10 +1396,37 @@ async function awaitReply(opts = {}) {
     });
     const meaningful = kept.join('\n').replace(/^\n+/, '').replace(/\s+$/, '');
 
+    if (Date.now() - lastProgress > PROGRESS_MS) {
+      lastProgress = Date.now();
+      // The renderer draws a live counter from this. Four minutes of silence is
+      // the single most common reason a new user decides the app has hung.
+      emit('progress', {
+        id: driveId,
+        chars: meaningful.length,
+        generating,
+        echoSeen,
+        ms: Date.now() - started,
+      });
+    }
+
     if (meaningful !== lastDelta) {
       lastDelta = meaningful;
       lastChange = Date.now();
       continue;
+    }
+
+    // Nothing has arrived and nothing is happening: say which hook is missing
+    // rather than sitting here for the full ten minutes. A send click that did
+    // not register, or a transcript we can no longer read, both land here.
+    if (
+      !meaningful && !echoSeen && !generating && !sawGenerating &&
+      Date.now() - started > DELIVERY_GRACE_MS &&
+      messageNodes().length <= beforeMessages
+    ) {
+      throw new Error(
+        `prompt never reached the chat - no new message in ${Math.round(DELIVERY_GRACE_MS / 1000)}s` +
+        missingNote()
+      );
     }
 
     // While the UI says it is still generating there is nothing to decide:
@@ -930,13 +1449,16 @@ async function awaitReply(opts = {}) {
     if (sawGenerating) {
       // We watched a real generation cycle begin and end. The stop button
       // flickers between tokens, so require it gone for several consecutive
-      // polls as well as the content holding still.
-      if (idleTicks >= 5 && stableFor > 1500) return meaningful;
+      // polls as well as the content holding still - fewer of them when the
+      // send control is back on screen, because ChatGPT swaps one for the
+      // other and that is positive evidence rather than mere absence.
+      const need = sendReady() ? IDLE_TICKS_SEND_READY : IDLE_TICKS;
+      if (idleTicks >= need && stableFor > 1500) return finish(meaningful, 'stop-button-cleared');
     } else if (stableFor > Math.max(quietMs, 12000)) {
       // We never saw the stop button at all - a missing testid, or a reply
       // that finished between polls. With no UI signal to trust, wait far
       // longer before believing the text has stopped growing.
-      return meaningful;
+      return finish(meaningful, 'no-signal-quiet');
     }
   }
 
@@ -944,18 +1466,134 @@ async function awaitReply(opts = {}) {
   // returns half a file that looks complete - the exact failure that wrote a
   // 617-char stub over a 6400-char answer. Only salvage once generation has
   // demonstrably stopped.
-  if (lastDelta && !isGenerating()) return lastDelta;
+  if (lastDelta && !isGenerating()) return finish(lastDelta, 'timeout-salvage');
   throw new Error(
     isGenerating()
       ? 'still generating after the full timeout - reply abandoned rather than truncated'
-      : 'no response detected before timeout'
+      : `no response detected before timeout (echo ${echoSeen ? 'seen' : 'never rendered'}, ` +
+        `${messageNodes().length} messages)${missingNote()}`
   );
+}
+
+/* ------------------------------------------------------------ diagnostics */
+
+/**
+ * Which hooks are missing right now, as a sentence fragment.
+ *
+ * Every error that used to read "no response detected before timeout" now says
+ * what the driver could not see, because that is the difference between a user
+ * filing "it stopped working" and a user clicking the right Pick button.
+ */
+function missingNote() {
+  const gone = [];
+  if (!findComposer()) gone.push('composer');
+  if (!messageNodes().length) gone.push('messages');
+  if (!findSendButton()) gone.push('send button');
+  if (!lastStopSeenAt) gone.push('stop button (never seen)');
+  return gone.length ? ` - not found: ${gone.join(', ')}. Run Health, then Pick.` : '';
+}
+
+/**
+ * Structured report of every element the driver needs.
+ *
+ * This is what the UI shows when ChatGPT changes: one row per hook, whether it
+ * was found, how (a documented selector, a heuristic, or the user's own pick),
+ * and which pick target fixes it. Nothing here clicks anything, so it is safe
+ * to run at any time, including mid-generation.
+ */
+function health() {
+  const composer = findComposer();
+  const root = findOutputRoot();
+  const send = findSendButton();
+  const stop = findStopButton();
+  const model = findModelTrigger();
+  const newchat = findNewChatButton();
+  const msgs = messageNodes();
+
+  const row = (name, el, opts = {}) => ({
+    name,
+    found: !!el,
+    via: el ? via[name] : null,
+    override: state[OVERRIDE_KEY[name]] || null,
+    selector: el ? cssPath(el) : null,
+    detail: el ? (opts.detail ? opts.detail(el) : '') : (opts.absent || ''),
+    critical: !!opts.critical,
+    pick: name,
+  });
+
+  const elements = [
+    row('composer', composer, {
+      critical: true,
+      detail: (el) => (isEditable(el) ? `${el.tagName} editable` : `${el.tagName} NOT editable`),
+      absent: 'no contenteditable or textarea on the page',
+    }),
+    // locateOutputRoot falls back to <body> so transcript() always has
+    // something to read; that is not a FOUND scroller, and reporting it as one
+    // would hide the exact breakage this row exists to surface.
+    row('output', via.output ? root : null, {
+      critical: true,
+      detail: () => `${msgs.length} messages, ${transcriptSize()} chars`,
+      absent: 'no scrollable conversation container',
+    }),
+    row('send', send, {
+      detail: (el) => (labelOf(el).trim() || 'icon button'),
+      // ChatGPT renders a voice button until the composer holds text, so an
+      // absent send button on an idle tab is normal, not broken.
+      absent: 'not rendered while the composer is empty - Enter is the fallback',
+    }),
+    row('stop', stop, {
+      detail: (el) => (labelOf(el).trim() || 'icon button'),
+      absent: lastStopSeenAt
+        ? 'only rendered while generating - seen earlier this session'
+        : 'only rendered while generating - never seen yet',
+    }),
+    row('model', model, {
+      detail: (el) => (el.textContent || '').trim(),
+      absent: 'no menu-opening control with a model-ish label',
+    }),
+    row('newchat', newchat, {
+      detail: (el) => (labelOf(el).trim() || (el.textContent || '').trim().slice(0, 24)),
+      absent: 'no new-chat control (navigation is used instead on this site)',
+    }),
+  ];
+
+  const page = /(^|\.)(chatgpt\.com|openai\.com)$/.test(location.host);
+  const loggedIn = !document.querySelector('input[type="password"]');
+  const broken = elements.filter((e) => e.critical && !e.found).map((e) => e.name);
+  const degraded = elements.filter((e) => e.found && e.via === 'heuristic').map((e) => e.name);
+
+  return {
+    ok: page && loggedIn && !broken.length,
+    url: location.href,
+    host: location.host,
+    page,
+    loggedIn,
+    messages: msgs.length,
+    chars: transcriptSize(),
+    generating: !!stop,
+    elements,
+    broken,
+    degraded,
+    summary: !page
+      ? 'not a ChatGPT page'
+      : !loggedIn
+        ? 'a login form is on screen - sign in first'
+        : broken.length
+          ? `missing: ${broken.join(', ')} - use the matching Pick button`
+          : degraded.length
+            ? `working, but ${degraded.join(', ')} found by heuristic - the markup has moved`
+            : 'all hooks found',
+  };
 }
 
 /** Diagnostic: open the model menu and report what the DOM actually contains. */
 async function dumpMenu() {
-  const trigger = findModelTrigger();
-  if (!trigger) return { error: 'no model trigger found' };
+  let trigger;
+  try {
+    trigger = safeTrigger();
+  } catch (e) {
+    return { error: String(e.message || e) };
+  }
   const label = (trigger.textContent || '').trim();
   trigger.click();
   await sleep(1500);
@@ -1034,10 +1672,12 @@ async function ask(text, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 180000;
 
   const composer = findComposer();
-  if (!composer) throw new Error('composer not found - use Pick Composer');
+  if (!composer) throw new Error(`composer not found - use Pick Composer${missingNote()}`);
 
-  const before = transcript();
-  insertText(composer, text);
+  const before = transcript(true);
+  if (!insertText(composer, text)) {
+    throw new Error('composer refused the text - the editor ignored both paste and insertText');
+  }
   await sleep(300);
 
   // Prefer the real send button; Enter is the fallback for when we can't find it.
@@ -1069,7 +1709,7 @@ async function ask(text, opts = {}) {
       break;
     }
   }
-  if (!grew) throw new Error('no response detected before timeout');
+  if (!grew) throw new Error(`no response detected before timeout${missingNote()}`);
 
   // The reply is whatever was appended after our own echoed prompt.
   let delta = last.startsWith(before) ? last.slice(before.length) : last;
@@ -1080,44 +1720,85 @@ async function ask(text, opts = {}) {
 
 /* -------------------------------------------------------------- new chat */
 
+const NEW_CHAT_SELECTORS = [
+  '[data-testid="create-new-chat-button"]',
+  '[data-testid*="new-chat" i]',
+  '[data-testid*="new-thread" i]',
+];
+
+/** A sidebar entry for an existing conversation, which must never be clicked. */
+const isHistoryLink = (el) => !!el.closest('a[href^="/c/"]');
+
+/**
+ * The control that starts a fresh conversation.
+ *
+ * An untitled conversation in the sidebar is *called* "New chat", so text
+ * matching alone would reopen an old thread instead of starting one. Trust
+ * testid and aria-label first, and never accept a history link.
+ */
+function findNewChatButton() {
+  if (state.newchatSelector) {
+    const el = q1(state.newchatSelector);
+    if (visible(el) && !isHistoryLink(el)) { via.newchat = 'picked'; return el; }
+  }
+  for (const sel of NEW_CHAT_SELECTORS) {
+    const el = q1(sel);
+    if (visible(el) && !isHistoryLink(el)) { via.newchat = 'known'; return el; }
+  }
+
+  const candidates = [...document.querySelectorAll('button, [role="button"], a[href]')]
+    .filter((b) => !isHistoryLink(b));
+  const labelled = candidates.filter((b) => {
+    const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
+    return NEW_CHAT_LABEL.test(label) || /\bnew conversation\b/i.test(label);
+  });
+  if (labelled.length) {
+    const el = labelled.find(visible) || labelled[0];
+    via.newchat = 'known';
+    return el;
+  }
+
+  const byText = candidates.filter((b) => {
+    const t = (b.textContent || '').trim();
+    return NEW_CHAT_LABEL.test(t) && t.length < 24;
+  });
+  if (byText.length) {
+    via.newchat = 'heuristic';
+    return byText.find(visible) || byText[0];
+  }
+  via.newchat = null;
+  return null;
+}
+
 /**
  * Start a fresh conversation. Long transcripts get virtualized - old messages
  * unmount as new ones stream - which blinds the growth-based reply detector.
  * Rotating to a new chat resets that cleanly.
  */
 async function newChat() {
-  const labelled = (b) => {
-    const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
-    return NEW_CHAT_LABEL.test(label) || /\bnew conversation\b/i.test(label);
-  };
-  // An untitled conversation in the sidebar is *called* "New chat", so text
-  // matching alone would reopen an old thread instead of starting one. Trust
-  // aria-label/testid first, and never accept a history link.
-  const candidates = [...document.querySelectorAll('button, [role="button"], a[href]')];
-  const byText = (b) =>
-    !b.closest('a[href^="/c/"]') &&
-    NEW_CHAT_LABEL.test((b.textContent || '').trim()) &&
-    (b.textContent || '').trim().length < 24;
-
-  const pool = [
-    q1('[data-testid="create-new-chat-button"]'),
-    ...candidates.filter(labelled),
-    ...candidates.filter(byText),
-  ].filter(Boolean);
-
-  const btn = pool.find((b) => visible(b)) || pool[0];
-  if (!btn) throw new Error('New chat button not found');
+  const btn = findNewChatButton();
+  if (!btn) throw new Error('New chat button not found - use Pick New Chat');
   btn.click();
-  // The click may navigate; the fresh chat's composer mounts noticeably later.
-  // Poll cheaply: findComposer first, and transcript() (expensive innerText on
-  // a large DOM) only once a composer exists - constant transcript() polling
-  // is what used to push this past the caller's timeout.
+  invalidateCaches();
+
+  // The click may navigate; the fresh chat's composer mounts noticeably later,
+  // and returning before it does means the next prompt is typed into nothing.
+  // Poll cheaply: findComposer first, and the emptiness check only once an
+  // EDITABLE composer exists.
   for (let i = 0; i < 20; i++) {
     await sleep(400);
     const c = findComposer();
-    if (!c) continue;
-    const chars = transcript().length;
-    if (chars < 2000) return { chars };
+    if (!isEditable(c)) continue;
+    // Message count, not character count: with no messages mounted the old
+    // transcript().length fell through to the output root's innerText, which on
+    // an account with history resolves to the sidebar's chat list - never under
+    // 2000 chars, so this threw even after succeeding.
+    const messages = messageNodes(true).length;
+    if (messages === 0 || transcriptSize() < 2000) {
+      state.before = '';
+      state.beforeMessages = messages;
+      return { chars: transcriptSize(), messages, url: location.href };
+    }
   }
   throw new Error('new chat did not produce a usable composer');
 }
@@ -1149,22 +1830,20 @@ async function selftest() {
 
   const composer = findComposer();
   check('composer found', () => (composer ? cssPath(composer) : false));
-  check('composer is editable', () =>
-    composer &&
-    (composer.isContentEditable || ['TEXTAREA', 'INPUT'].includes(composer.tagName))
-      ? composer.tagName + (composer.isContentEditable ? '[contenteditable]' : '')
-      : false
-  );
+  check('composer is editable', () => (isEditable(composer) ? composer.tagName : false));
 
   // NB: the send button is deliberately not checked here. ChatGPT shows a
   // voice control until the composer has text, so send can only be verified
   // mid-typing - the renderer's self-test does that after injecting a marker.
 
   const root = findOutputRoot();
-  check('output root found', () => (root ? cssPath(root) : false));
+  check('output root found', () => (root && via.output ? cssPath(root) : false));
   check('transcript readable', () => {
-    const n = transcript().length;
-    return n > 0 ? `${n} chars` : false;
+    if (!root) return false;
+    const n = messageNodes().length;
+    // A brand-new chat legitimately has no messages; failing the row there sent
+    // people hunting for a breakage that was just an empty conversation.
+    return n ? `${n} messages, ${transcriptSize()} chars` : 'empty conversation';
   });
 
   check('model trigger found', () => {
@@ -1173,14 +1852,72 @@ async function selftest() {
   });
 
   const passed = checks.filter((c) => c.pass).length;
-  return { passed, total: checks.length, checks };
+  // The structured report rides along so the UI can offer the right Pick button
+  // for whichever row failed, without a second round trip.
+  return { passed, total: checks.length, checks, health: health() };
 }
 
 /* ------------------------------------------------------------- pick mode */
 
+const PICK_CURSOR = 'crosshair';
+
 function startPick(which) {
+  if (which === 'cancel') return stopPick();
+  if (!HOOKS.includes(which)) throw new Error(`unknown pick target "${which}"`);
   state.picking = which;
-  document.body.style.cursor = 'crosshair';
+  document.body.style.cursor = PICK_CURSOR;
+  return which;
+}
+
+function stopPick() {
+  state.picking = null;
+  document.body.style.cursor = '';
+  return null;
+}
+
+/**
+ * Turn a click into the element we actually wanted.
+ *
+ * Two jobs, both learned the hard way. Clicks land on the inner <svg> of an
+ * icon button, so we climb to the control itself; and a stray click on the page
+ * background used to be stored verbatim as the composer override, which then
+ * beat every heuristic and left the tab permanently dead. A pick that cannot be
+ * validated is rejected and told to the user rather than remembered.
+ */
+function resolvePick(which, target) {
+  if (!target || target.nodeType !== 1) return { error: 'that is not an element' };
+
+  if (which === 'composer') {
+    const el =
+      target.closest('[contenteditable="true"], textarea, input, [role="textbox"]') || target;
+    return isEditable(el)
+      ? { el }
+      : { error: 'that is not something text can be typed into' };
+  }
+
+  if (which === 'output') {
+    const el = scrollableAncestor(target) || target;
+    const r = el.getBoundingClientRect();
+    return r.height > 200 && el.scrollHeight > el.clientHeight
+      ? { el }
+      : { error: 'that is not the scrollable conversation area' };
+  }
+
+  // send / stop / model / newchat are all controls.
+  const el = target.closest('button, [role="button"], a[href]') || target;
+  if (!matches(el, 'button, [role="button"], a[href]')) {
+    return { error: 'that is not a button' };
+  }
+  if (which !== 'newchat' && matches(el, 'a[href]') && !matches(el, '[role="button"]')) {
+    return { error: 'that is a link - it would navigate away instead of acting' };
+  }
+  if (which === 'newchat' && isHistoryLink(el)) {
+    return { error: 'that is an existing conversation, not the new-chat control' };
+  }
+  if (which === 'model' && isBillingish(el)) {
+    return { error: 'that control navigates or looks like billing - it will not be clicked' };
+  }
+  return { el };
 }
 
 document.addEventListener(
@@ -1189,17 +1926,86 @@ document.addEventListener(
     if (!state.picking) return;
     e.preventDefault();
     e.stopPropagation();
-    const sel = cssPath(e.target);
-    if (state.picking === 'composer') state.composerSelector = sel;
-    else if (state.picking === 'send') state.sendSelector = sel;
-    else if (state.picking === 'model') state.modelSelector = sel;
-    else state.outputSelector = sel;
-    ipcRenderer.sendToHost('picked', { which: state.picking, selector: sel });
-    state.picking = null;
-    document.body.style.cursor = '';
+    const which = state.picking;
+    const { el, error } = resolvePick(which, e.target);
+    if (error) {
+      // Stay in pick mode: the user aimed at the wrong thing, and dropping out
+      // now means clicking the toolbar button again for another try.
+      emit('picked', { which, selector: null, rejected: true, reason: error });
+      return;
+    }
+    const sel = cssPath(el);
+    // cssPath climbs at most six levels, so it can describe a node it cannot
+    // uniquely address. Storing such a path silently points every later lookup
+    // at a sibling - worse than having no override at all, and invisible.
+    if (q1(sel) !== el) {
+      emit('picked', {
+        which,
+        selector: null,
+        rejected: true,
+        reason: 'that element has no stable selector - try its parent, or the control itself',
+      });
+      return;
+    }
+    state[OVERRIDE_KEY[which]] = sel;
+    invalidateCaches();
+    emit('picked', { which, selector: sel });
+    stopPick();
   },
   true
 );
+
+// Escape is the way out of a pick started by mistake; without it the next
+// click anywhere on the page was consumed as a pick.
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (!state.picking || e.key !== 'Escape') return;
+    const which = state.picking;
+    stopPick();
+    emit('picked', { which, selector: null, cancelled: true });
+  },
+  true
+);
+
+/**
+ * Apply (or clear) selector overrides.
+ *
+ * The renderer re-sends these after every reload, because a hard reset drops
+ * the whole preload - a pick that only lived in this module's scope survived
+ * about one chat rotation. An explicitly null/empty value clears that override,
+ * which is what the UI's Clear button sends.
+ */
+function setSelectors(args = {}) {
+  const applied = {};
+  const rejected = {};
+  for (const hook of HOOKS) {
+    if (!(hook in args)) continue;
+    const value = args[hook];
+    if (!value) {
+      state[OVERRIDE_KEY[hook]] = null;
+      applied[hook] = null;
+      continue;
+    }
+    const sel = String(value);
+    // A selector Chromium refuses to parse throws out of every find* call, and
+    // the override is sticky, so an unparseable pick killed the tab until
+    // reload. Prove it parses before storing it.
+    try {
+      document.querySelector(sel);
+    } catch {
+      rejected[hook] = sel;
+      continue;
+    }
+    state[OVERRIDE_KEY[hook]] = sel;
+    applied[hook] = sel;
+  }
+  invalidateCaches();
+  return { applied, rejected, overrides: overrides() };
+}
+
+const overrides = () =>
+  Object.fromEntries(HOOKS.map((h) => [h, state[OVERRIDE_KEY[h]] || null]));
 
 /* ------------------------------------------------------------ declutter */
 
@@ -1213,18 +2019,51 @@ document.addEventListener(
 const BANNER_TEXT =
   /(workspace member hit a limit|turn on auto-?reload|add credits|upgrade your plan|you're out of credits)/i;
 
+/** node -> the inline display value it had before we hid it. */
+const hiddenNodes = new Map();
+/** A mis-aimed hide is invisible and permanent; cap how much damage one can do. */
+const MAX_HIDDEN = 6;
+
 function declutter() {
-  const buttons = [...document.querySelectorAll('button, a[role="button"]')];
-  for (const b of buttons) {
-    if (!BANNER_TEXT.test((b.textContent || '').trim())) continue;
+  // Restore anything whose banner text has gone: the site dismissed it, or we
+  // hid the wrong node and the user deserves it back without a reload.
+  for (const [node, prev] of hiddenNodes) {
+    if (!node.isConnected) { hiddenNodes.delete(node); continue; }
+    if (BANNER_TEXT.test(node.textContent || '')) continue;
+    node.style.setProperty('display', prev.display, prev.priority);
+    if (!node.getAttribute('style')) node.removeAttribute('style');
+    hiddenNodes.delete(node);
+    emit('declutter', { action: 'restored', selector: cssPath(node) });
+  }
+
+  const composer = findComposer();
+  const root = findOutputRoot();
+  for (const b of document.querySelectorAll('button, a[role="button"]')) {
+    const t = (b.textContent || '').trim();
+    // A long text is a paragraph that merely mentions credits, not a nag button.
+    if (!t || t.length > 60 || !BANNER_TEXT.test(t)) continue;
+    if (hiddenNodes.size >= MAX_HIDDEN) return;
     // Climb to the banner container: the first ancestor that is wide, short,
-    // and does not contain the composer (hiding that would break the tab).
+    // holds little text, and contains neither the composer nor the conversation
+    // (hiding either would blind the whole tab). The old single guard was a
+    // hardcoded #prompt-textarea lookup - the exact id a redesign renames, and
+    // this file's whole job is to survive that.
     let node = b;
     for (let i = 0; i < 6 && node.parentElement; i++) {
       node = node.parentElement;
+      if (node === document.body || node === document.documentElement) break;
+      if (composer && node.contains(composer)) break;
+      if (root && node.contains(root)) break;
+      if (textLen(node) > 400) break;
       const r = node.getBoundingClientRect();
-      if (r.width > 250 && r.height > 0 && r.height < 220 && !node.querySelector('#prompt-textarea')) {
+      if (r.width > 250 && r.height > 0 && r.height < 220) {
+        if (hiddenNodes.has(node)) break;
+        hiddenNodes.set(node, {
+          display: node.style.getPropertyValue('display'),
+          priority: node.style.getPropertyPriority('display'),
+        });
         node.style.setProperty('display', 'none', 'important');
+        emit('declutter', { action: 'hid', selector: cssPath(node), text: t.slice(0, 60) });
         break;
       }
     }
@@ -1255,28 +2094,30 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
     else if (cmd === 'prepare') result = await prepare();
     else if (cmd === 'clickSend') result = clickSend();
     else if (cmd === 'composerText') result = composerText();
-    else if (cmd === 'awaitReply') result = await awaitReply(args.opts);
+    else if (cmd === 'awaitReply') result = await awaitReply(args.opts, id);
     else if (cmd === 'dumpButtons') result = dumpButtons();
     else if (cmd === 'clearComposer') result = clearComposer();
-    else if (cmd === 'chars') result = transcript().length;
+    else if (cmd === 'chars') result = transcriptSize();
     else if (cmd === 'newChat') result = await newChat();
+    else if (cmd === 'lastUserMessage') result = lastUserMessage();
     else if (cmd === 'transcriptTail') {
       // The newest message, for autopilot to read what the user just typed.
-      const t = transcript();
-      result = t.slice(Math.max(0, t.length - (args.tail || 1200)));
+      result = transcriptTail(args.tail || 1200);
     }
     else if (cmd === 'describeSend') result = describeSend();
     else if (cmd === 'dumpMenu') result = await dumpMenu();
-    else if (cmd === 'pick') startPick(args.which);
+    else if (cmd === 'pick') result = startPick(args.which);
     else if (cmd === 'listModels') result = await listModels();
     else if (cmd === 'selectModel') result = await selectModel(args.name);
     else if (cmd === 'selftest') result = await selftest();
+    else if (cmd === 'health') result = health();
     else if (cmd === 'probe') {
       const composer = findComposer();
       const send = findSendButton();
       const model = findModelTrigger();
       // Autopilot polls probe purely for transcriptChars, so nothing in here
-      // may do the same expensive lookup twice.
+      // may do the same expensive lookup twice - and the size is counted
+      // without innerText, which used to flush layout on every poll.
       const outputRoot = findOutputRoot();
       result = {
         url: location.href,
@@ -1284,24 +2125,14 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
         sendButton: send ? (send.getAttribute('aria-label') || send.textContent || '?').trim() : null,
         modelTrigger: model ? (model.textContent || '').trim() : null,
         outputRoot: outputRoot ? cssPath(outputRoot) : null,
-        transcriptChars: transcript().length,
+        transcriptChars: transcriptSize(),
         messages: messageNodes().length,
         generating: isGenerating(),
-        overrides: {
-          composer: state.composerSelector,
-          output: state.outputSelector,
-          send: state.sendSelector,
-          model: state.modelSelector,
-        },
+        overrides: overrides(),
       };
     }
-    else if (cmd === 'setSelectors') {
-      if (args.composer) state.composerSelector = args.composer;
-      if (args.output) state.outputSelector = args.output;
-      if (args.send) state.sendSelector = args.send;
-      if (args.model) state.modelSelector = args.model;
-      result = true;
-    } else throw new Error(`unknown cmd ${cmd}`);
+    else if (cmd === 'setSelectors') result = setSelectors(args);
+    else throw new Error(`unknown cmd ${cmd}`);
     ipcRenderer.sendToHost('drive:done', { id, result });
   } catch (err) {
     ipcRenderer.sendToHost('drive:done', { id, error: String(err.message || err) });

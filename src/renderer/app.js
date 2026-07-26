@@ -51,8 +51,17 @@ const ROLES = { planner: 'a', builder: 'b', reviewer: 'c', auditor: 'd' };
 const QA = ROLES.auditor;
 
 // No knobs for these any more - sane constants.
-const RETRIES = 4; // per-file build attempts
-const FILE_BACKSTOP = 200; // runaway guard; the planner/auditor decide "done"
+const RETRIES = 4; // per-file build attempts, before the adaptive budget trims them
+const FILE_BACKSTOP = 200; // distinct files one run may write
+// Rounds and files are different budgets. The planner loop used to be bounded
+// by FILE_BACKSTOP, which made the file cap unreachable - a round that rewrites
+// an existing path never grows `written` - so nothing at all bounded the number
+// of rounds, the wall clock, or the number of messages sent to the chat tabs.
+const ROUND_BACKSTOP = 400;
+const RUN_BUDGET_MS = 90 * 60 * 1000;
+const MESSAGE_BUDGET = 800;
+/** The planner may replace a file it already wrote, but not forever. */
+const MAX_WRITES_PER_PATH = 3;
 
 // The preview webview gets NO preload/partition - only the agent tabs do.
 for (const tag of TAGS_ALL) {
@@ -60,13 +69,86 @@ for (const tag of TAGS_ALL) {
   wvOf(tag).setAttribute('partition', partition);
 }
 
-function markBusy(tag, on) {
+/** Tabs with a command in flight - a Stop has to know which ones it interrupted. */
+const busyTags = new Set();
+
+function markBusy(tag, on, what = '') {
+  if (on) busyTags.add(tag);
+  else busyTags.delete(tag);
   const el = document.querySelector(`.tab[data-tab="${tag}"]`);
-  if (el) el.classList.toggle('busy', on);
+  if (!el) return;
+  el.classList.toggle('busy', on);
+  // What this tab is doing right now. With four webviews on screen a hard
+  // reset otherwise looks exactly like a crash.
+  if (on && what) el.dataset.act = what;
+  else delete el.dataset.act;
+  el.title = on && what ? `${tag.toUpperCase()}: ${what}` : '';
 }
 
 let running = false;
 let abort = false;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Everything a run knows about itself.
+ *
+ * The status pill, the final summary and .browsersmith/run.json all read from
+ * here, so they cannot disagree about what actually happened - the pill used to
+ * say "done" both for a run that wrote nothing and for a run the user stopped.
+ */
+const run = {
+  active: false,
+  startedAt: 0,
+  phase: 'idle',
+  project: '',
+  request: '',
+  modeKey: '',
+  rounds: 0,
+  messages: 0,
+  written: [],
+  unreviewed: [], // reached disk without a reviewer PRINT
+  failedFiles: [], // the builder never produced a usable version
+  note: null,
+  outcome: 'idle',
+  internalError: null,
+};
+
+function resetRun(project, request, modeKey) {
+  Object.assign(run, {
+    active: true,
+    startedAt: Date.now(),
+    phase: 'starting',
+    project,
+    request,
+    modeKey,
+    rounds: 0,
+    messages: 0,
+    written: [],
+    unreviewed: [],
+    failedFiles: [],
+    note: null,
+    outcome: 'running',
+    internalError: null,
+  });
+  renderStatus(); // the clock starts now, not at the first status() call
+}
+
+const mmss = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+};
+
+/** Why a run must wrap up now, or null while it still has room. */
+function budgetExceeded() {
+  if (!run.active) return null;
+  if (run.messages >= MESSAGE_BUDGET) return `message budget (${MESSAGE_BUDGET} sent) reached`;
+  if (run.rounds >= ROUND_BACKSTOP) return `round cap (${ROUND_BACKSTOP}) reached`;
+  if (Date.now() - run.startedAt >= RUN_BUDGET_MS) {
+    return `time budget (${Math.round(RUN_BUDGET_MS / 60000)} min) reached`;
+  }
+  return null;
+}
 
 /* ---------------------------------------------------------------- logging */
 
@@ -79,11 +161,65 @@ function log(msg, cls = '') {
   els.log.scrollTop = els.log.scrollHeight;
 }
 
-function status(s) {
-  els.status.textContent = s;
-  // The header dot animates while something is actually happening.
-  els.status.classList.toggle('working', !['idle', 'done', 'failed'].includes(s));
+/**
+ * A log line with the evidence folded away behind it.
+ *
+ * The only trace of a write used to be "wrote workspace/x (N bytes)": prose
+ * written into a file body, or a stray fence spliced in by a patch, was
+ * invisible. Both are obvious at a glance here, and cost one click.
+ */
+function logDetail(summary, body, cls = '') {
+  const wrap = document.createElement('details');
+  const head = document.createElement('summary');
+  const t = new Date().toLocaleTimeString();
+  head.innerHTML = `<span class="t">${t}</span> <span class="${cls}"></span>`;
+  head.lastChild.textContent = summary;
+  const pre = document.createElement('pre');
+  pre.textContent = String(body ?? '');
+  Object.assign(pre.style, {
+    margin: '2px 0 6px 0',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    maxHeight: '220px',
+    overflow: 'auto',
+    opacity: '0.85',
+  });
+  wrap.append(head, pre);
+  els.log.appendChild(wrap);
+  els.log.scrollTop = els.log.scrollHeight;
 }
+
+/** The head of a file body, for the write receipt. */
+function preview30(text) {
+  const lines = String(text || '').split('\n');
+  const head = lines.slice(0, 30).join('\n');
+  return lines.length > 30 ? `${head}\n… ${lines.length - 30} more line(s)` : head;
+}
+
+/** States that are an END, not a step: no spinner, no elapsed clock. */
+const TERMINAL_STATES = ['idle', 'done', 'failed', 'stopped', 'partial'];
+
+function renderStatus() {
+  const parts = [run.phase];
+  if (run.active) {
+    parts.push(mmss(Date.now() - run.startedAt));
+    parts.push(`${run.written.length} file${run.written.length === 1 ? '' : 's'}`);
+    parts.push(`${run.messages} msg`);
+  }
+  els.status.textContent = parts.join(' · ');
+  // The header dot animates while something is actually happening.
+  els.status.classList.toggle('working', !TERMINAL_STATES.includes(run.phase));
+}
+
+function status(s) {
+  run.phase = s;
+  renderStatus();
+}
+
+// A run lasts minutes; a frozen string is indistinguishable from a hang.
+setInterval(() => {
+  if (run.active) renderStatus();
+}, 1000);
 
 /* --------------------------------------------------------------- terminal */
 
@@ -174,7 +310,25 @@ function bind(wvArg, tag) {
 }
 for (const tag of TAGS_ALL) bind(wvOf(tag), tag.toUpperCase());
 
+/**
+ * Reject everything in flight.
+ *
+ * Stop used to be a flag polled at loop boundaries, and awaitReply holds for up
+ * to 630s - so Stop could take ten minutes to do anything visible and the app
+ * looked hung. Rejecting the pending entries unwinds the loop at once; a late
+ * `drive:done` for a cancelled id finds no entry and is ignored.
+ */
+function cancelPending(reason = 'stopped') {
+  const waiting = [...pending.values()];
+  pending.clear();
+  for (const p of waiting) p.reject(new Error(reason));
+  return waiting.length;
+}
+
 function drive(wv, cmd, args = {}, timeoutMs = 200000) {
+  // Once a run is cancelling, a new tab command must not queue up behind the
+  // one being abandoned.
+  if (abort) return Promise.reject(new Error('stopped'));
   const id = ++seq;
   // Only one webview holds keyboard focus at a time, and a contenteditable
   // ignores synthetic input when its webContents is unfocused. Focus the
@@ -240,6 +394,7 @@ async function ask(wv, text, opts) {
 
   const clicked = await drive(wv, 'clickSend', {}, 8000);
   if (!clicked) await tabs.enter(id);
+  run.messages++; // the run budget counts what we actually sent
 
   // awaitReply needs the prompt so it can find and skip our own echo. The
   // inner (preload) timeout must be shorter than the outer drive timeout, or
@@ -291,18 +446,31 @@ async function rotateIfBloated(tag) {
     }
     await seedTab(tag);
   } catch (e) {
-    log(`${tag.toUpperCase()}: chat rotation failed (${e.message}) — continuing`, 'err');
+    // Continuing here left the run talking to a tab that had just been reloaded
+    // onto a brand-new chat and therefore held NO role contract: an unseeded
+    // builder answers with prose, an unseeded reviewer writes an essay, and the
+    // only trace was one "continuing" line scrolled far up the log. Fail the
+    // round instead - the caller reseeds and retries.
+    seeded.delete(tag);
+    throw new Error(`${tag.toUpperCase()}: chat rotation failed (${e.message})`);
   }
 }
 
-/** Point the tab at a brand-new chat. The reliable last resort. */
-function hardResetTab(tag) {
+/** The host the agent tabs must be on for a page to be usable at all. */
+const SITE_HOST = (() => {
+  try {
+    return new URL(site.url).host;
+  } catch {
+    return '';
+  }
+})();
+
+function loadFreshChat(tag) {
   const wv = wvOf(tag);
   return new Promise((resolve) => {
     const done = () => {
       wv.removeEventListener('did-stop-loading', done);
       clearTimeout(timer);
-      seeded.delete(tag);
       setTimeout(resolve, 3000); // let the composer mount
     };
     const timer = setTimeout(done, 25000);
@@ -311,10 +479,33 @@ function hardResetTab(tag) {
   });
 }
 
+/**
+ * Point the tab at a brand-new chat and CHECK that it got there.
+ *
+ * did-stop-loading fires for an offline error page, an expired session and a
+ * captcha interstitial exactly as it does for a usable chat. Without the probe
+ * the reset "succeeded" and the run failed much later with "composer not found
+ * - use Pick Composer", which points the user at the element pickers instead of
+ * at the real cause.
+ */
+async function hardResetTab(tag) {
+  seeded.delete(tag);
+  await loadFreshChat(tag);
+  for (let i = 0; i < 2; i++) {
+    const probe = await drive(wvOf(tag), 'probe', {}, 10000).catch(() => null);
+    const onSite = !SITE_HOST || String(probe?.url || '').includes(SITE_HOST);
+    if (probe && probe.composer && onSite) return;
+    if (i === 0) await sleep(4000); // a slow mount is not a broken page
+  }
+  throw new Error(
+    `tab ${tag.toUpperCase()} is not on a usable ${site.name} page — check the login and the network`
+  );
+}
+
 /** Ask a role's tab, marking it busy so you can see who is working. */
 async function askRole(tag, prompt, opts) {
   await rotateIfBloated(tag);
-  markBusy(tag, true);
+  markBusy(tag, true, run.phase);
   try {
     return await ask(wvOf(tag), prompt, opts);
   } finally {
@@ -339,11 +530,12 @@ async function seedTab(tag) {
   if (seeded.has(tag) || !seededMode) return;
   const contract = protocol.systems(seededMode)[ROLE_OF_TAG[tag]];
   status(`seeding ${tag.toUpperCase()}`);
-  markBusy(tag, true);
+  markBusy(tag, true, 'seeding');
   try {
     try {
       await ask(wvOf(tag), contract + '\n\nReply with exactly: READY');
     } catch (e) {
+      if (abort) throw e; // a Stop is not something to retry through
       // One clean retry in a fresh chat: a seed that cannot be read dooms the
       // whole run, and rotation clears every known cause of unreadable replies.
       log(`${tag.toUpperCase()} seed failed (${e.message}) — hard reset and retry`, 'err');
@@ -364,19 +556,21 @@ async function ensureSeeded(modeKey) {
     seeded.clear();
     seededMode = modeKey;
   }
-  const pending = TAGS_ALL.filter((t) => !seeded.has(t));
-  if (!pending.length) return;
+  // NOT named `pending`: that shadowed the module-level in-flight registry
+  // every drive() call depends on.
+  const unseeded = TAGS_ALL.filter((t) => !seeded.has(t));
+  if (!unseeded.length) return;
 
   // The four seeds are independent, and typing goes to a specific webContents
   // rather than "whatever has focus", so they can run at once. Serially this
   // was 28s of a 113s run - a quarter of the wall clock spent waiting on four
   // things that never needed to wait for each other.
-  status(`seeding ${pending.length} tabs`);
+  status(`seeding ${unseeded.length} tabs`);
   // Staggered, not simultaneous: four identical requests landing in the same
   // millisecond looks like a burst and has drawn ERR_ADDRESS_UNREACHABLE.
   // 400ms apart keeps nearly all the parallel win without the thundering herd.
   const results = await Promise.allSettled(
-    pending.map(
+    unseeded.map(
       (tag, i) =>
         new Promise((resolve, reject) =>
           setTimeout(() => seedTab(tag).then(resolve, reject), i * 400)
@@ -386,7 +580,7 @@ async function ensureSeeded(modeKey) {
 
   // Concurrency is the one thing that could plausibly upset the composer, so
   // anything that failed gets a serial second chance before the run gives up.
-  const failed = pending.filter((_, i) => results[i].status === 'rejected');
+  const failed = unseeded.filter((_, i) => results[i].status === 'rejected');
   for (const tag of failed) {
     log(`${tag.toUpperCase()}: parallel seed failed — retrying on its own`, 'err');
     await seedTab(tag);
@@ -394,7 +588,59 @@ async function ensureSeeded(modeKey) {
 }
 
 /** Build noise that must never reach a prompt or the files list. */
-const NOISE_RE = /(^|\/)(node_modules|\.next|\.preview)(\/|$)/;
+const NOISE_RE = /(^|\/)(node_modules|\.next|\.preview|\.browsersmith)(\/|$)/;
+
+/** Where a run records itself, for the summary and for Resume. */
+const RUN_FILE = '.browsersmith/run.json';
+
+/**
+ * Checkpoint the run after every write.
+ *
+ * Any single hard failure used to discard the whole run; with this on disk,
+ * Resume continues from the last file instead of restarting the planner from
+ * zero. Never fail a run over its own bookkeeping.
+ */
+async function saveRunFile(project, preview = null) {
+  try {
+    const record = {
+      version: 1,
+      project,
+      request: run.request,
+      mode: run.modeKey,
+      startedAt: new Date(run.startedAt).toISOString(),
+      updatedAt: new Date().toISOString(),
+      elapsedMs: Date.now() - run.startedAt,
+      rounds: run.rounds,
+      messages: run.messages,
+      written: run.written,
+      unreviewed: [...new Set(run.unreviewed)],
+      failed: [...new Set(run.failedFiles)],
+      note: run.note,
+      outcome: run.outcome,
+      // safeLocation, not the raw URL: a file:// preview path carries the OS
+      // account name, and this file is inside a project people will publish.
+      preview: preview
+        ? {
+            ok: !!preview.ok,
+            skipped: !!preview.skipped,
+            stage: preview.stage || null,
+            where: preview.url ? safeLocation(preview.url, project) : null,
+          }
+        : null,
+    };
+    await fs.write(`${project}/${RUN_FILE}`, JSON.stringify(record, null, 2) + '\n');
+  } catch {
+    /* history is a nicety; a locked or full disk must not end the build */
+  }
+}
+
+async function loadRunFile(project) {
+  try {
+    return JSON.parse(await fs.read(`${project}/${RUN_FILE}`));
+  } catch {
+    return null;
+  }
+}
 
 /** Project-relative files on disk, minus install/build noise. */
 async function existingFiles(project) {
@@ -405,9 +651,48 @@ async function existingFiles(project) {
     .filter((f) => !NOISE_RE.test(f));
 }
 
+/**
+ * The reviewer's verdict, preferring the word it actually committed to.
+ *
+ * protocol.parseVerdict returns the FIRST of PRINT/RETRY found anywhere, so
+ * "I would not RETRY this; PRINT" threw away an approved file and burned a full
+ * rebuild round. An exact one-word reply wins; otherwise the LAST verdict word
+ * is the one the reviewer settled on.
+ */
+function readVerdict(reply) {
+  const t = protocol.clean(reply).trim();
+  const exact = t.match(/^\W*(PRINT|RETRY)\W*$/i);
+  if (exact) return exact[1].toUpperCase();
+  const all = [...t.toUpperCase().matchAll(/\b(PRINT|RETRY)\b/g)];
+  if (all.length) return all[all.length - 1][1];
+  return protocol.parseVerdict(reply);
+}
+
+/**
+ * How many build attempts this file gets.
+ *
+ * A fixed 5 attempts per file means a run near its ceiling spends what is left
+ * perfecting one file instead of finishing the project.
+ */
+function attemptsFor() {
+  if (!run.active) return RETRIES + 1;
+  const left = Math.min(
+    1 - (Date.now() - run.startedAt) / RUN_BUDGET_MS,
+    1 - run.messages / MESSAGE_BUDGET
+  );
+  if (left <= 0.1) return 1;
+  if (left <= 0.3) return 2;
+  return RETRIES + 1;
+}
+
 /** Build one file: builder writes it, reviewer judges it, we save it. */
 async function buildFile(project, filePath, request, mode) {
-  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+  // The last body that survived vetting but never got a PRINT. Losing nine
+  // finished files because the tenth reviewer round was flaky is worse than
+  // writing it with a loud UNREVIEWED line.
+  let salvage = null;
+
+  for (let attempt = 0; attempt < attemptsFor(); attempt++) {
     if (abort) throw new Error('stopped');
 
     status(`B: building ${filePath} (try ${attempt + 1})`);
@@ -422,11 +707,17 @@ async function buildFile(project, filePath, request, mode) {
         protocol.TAGS.build(filePath, request, mode, existing)
       );
     } catch (e) {
+      if (abort) throw e;
       log(`build attempt ${attempt + 1} failed: ${e.message}`, 'err');
       // A blind chat stays blind: a prompt that vanished once will vanish
       // again (seen live at 5.5KB - NOT a transcript-size problem). Give the
-      // next attempt a brand-new chat instead of the same broken one.
-      if (/no response detected|timed out|composer never received/i.test(String(e.message || e))) {
+      // next attempt a brand-new chat instead of the same broken one. A failed
+      // rotation lands here too: that tab has no contract any more.
+      if (
+        /no response detected|timed out|composer never received|rotation failed/i.test(
+          String(e.message || e)
+        )
+      ) {
         log('B: reply detection broke — moving to a fresh chat', 'err');
         await hardResetTab(ROLES.builder).catch(() => {});
         await seedTab(ROLES.builder).catch(() => {});
@@ -446,28 +737,98 @@ async function buildFile(project, filePath, request, mode) {
       continue;
     }
     log(`B returned ${candidate.length} chars`, 'b');
+    salvage = candidate;
 
     status('C: reviewing');
     let verdictReply;
+    let reviewed = true;
     try {
       verdictReply = await askRole(ROLES.reviewer, protocol.TAGS.review(filePath, candidate));
     } catch (e) {
+      // A Stop is not a flaky reviewer: it must not turn into a write.
+      if (abort) throw e;
       // The file itself looks fine; losing it to a flaky reviewer would be worse
-      // than accepting it, so a reviewer timeout counts as approval.
+      // than accepting it, so a reviewer timeout counts as approval - but the
+      // user is told, in as many words, that nothing reviewed this file.
       log(`reviewer unavailable (${e.message}) — accepting the file`, 'err');
       verdictReply = 'PRINT';
+      reviewed = false;
     }
-    const verdict = protocol.parseVerdict(verdictReply);
+    const verdict = readVerdict(verdictReply);
     log(`verdict = ${verdict ?? '(unparseable) ' + verdictReply.slice(0, 80)}`, 'a');
 
     if (verdict === 'PRINT') {
-      // Every project gets its own folder under workspace/.
-      const res = await fs.write(`${project}/${filePath}`, candidate);
-      log(`wrote workspace/${res.rel} (${res.bytes} bytes)`, 'ok');
-      await refreshFiles();
-      return res;
+      return writeReviewed(project, filePath, candidate, reviewed ? 'reviewed PRINT' : null);
     }
     log('RETRY -> rebuilding', 'err');
+  }
+
+  if (salvage) {
+    // Every attempt is spent and the body is still structurally sound: write it
+    // rather than throwing the file (and, historically, the whole run) away.
+    return writeReviewed(project, filePath, salvage, null, 'the reviewer never returned PRINT');
+  }
+  return null;
+}
+
+/**
+ * Write a file body, and say plainly whether anything reviewed it.
+ *
+ * Nothing may reach disk without either a reviewer verdict or an UNREVIEWED
+ * line the user can actually see.
+ */
+async function writeReviewed(project, filePath, body, verdictNote, why = '') {
+  // Every project gets its own folder under workspace/.
+  const res = await fs.write(`${project}/${filePath}`, body);
+  if (!verdictNote) {
+    run.unreviewed.push(filePath);
+    log(`UNREVIEWED: wrote workspace/${res.rel} — ${why || 'no reviewer verdict'}`, 'err');
+  }
+  logDetail(
+    `wrote workspace/${res.rel} (${res.bytes} bytes) · ${verdictNote || 'UNREVIEWED'}`,
+    preview30(body),
+    verdictNote ? 'ok' : 'err'
+  );
+  await refreshFiles();
+  return res;
+}
+
+/** Phrases the planner ends on when it means DONE but forgets the contract. */
+const DONE_PROSE =
+  /\b(done|complete|completed|finished|nothing (?:more|else|further)|no (?:more|further|additional) files?)\b/i;
+
+/**
+ * Read the planner's answer as a path, DONE, or nothing.
+ *
+ * "The project is complete." is the planner AGREEING, not breaking contract;
+ * treating it as a broken contract cost a nudge round and then killed the run.
+ */
+function readPath(reply) {
+  const direct = protocol.parsePath(reply);
+  if (direct) return direct;
+  const t = protocol.clean(reply).trim();
+  if (!t || t.length > 200) return null;
+  // Only when no line in it could be a path - "app/page.tsx is done" is a path.
+  const hasPath = t.split('\n').some((l) => protocol.parsePath(l));
+  return !hasPath && DONE_PROSE.test(t) ? 'DONE' : null;
+}
+
+/**
+ * The path hiding inside a prose answer, as a last resort.
+ *
+ * protocol.parsePath requires the WHOLE line to be the path, so "src/app.ts is
+ * the next file" reads as null - and that one sentence used to end the run.
+ * Only used after the explicit nudge has already failed: it guesses, and a
+ * guess is only better than giving up.
+ */
+function salvagePath(reply) {
+  const t = protocol.clean(reply);
+  if (!t || t.length > 400) return null;
+  for (const raw of t.split(/[\s,;:()"'`]+/)) {
+    const token = raw.replace(/[.]+$/, '');
+    if (!/^[\w.][\w./-]*\.[A-Za-z0-9]+$/.test(token)) continue;
+    if (token.split('/').includes('..')) continue;
+    return token;
   }
   return null;
 }
@@ -477,13 +838,26 @@ async function buildFile(project, filePath, request, mode) {
  *
  * The model sometimes drops into an agent/tool mode and answers with tool
  * chatter instead of obeying the one-line contract. Re-asking with an explicit
- * nudge recovers it, which is cheaper than failing the whole run.
+ * nudge recovers it, which is cheaper than failing the whole run. Returns
+ * { path, raw } - `path` is a relative path, the string 'DONE', or null.
  */
 async function askForPath(prompt) {
   const tag = ROLES.planner;
-  let reply = await askRole(tag, prompt);
+  let reply;
+  try {
+    reply = await askRole(tag, prompt);
+  } catch (e) {
+    if (abort) throw e;
+    // The planner going quiet takes the entire run with it, so it gets the
+    // same fresh-chat recovery the builder already has.
+    log(`planner unavailable (${e.message}) — fresh chat, one retry`, 'err');
+    await hardResetTab(tag);
+    await seedTab(tag);
+    reply = await askRole(tag, prompt);
+  }
   log(`${tag.toUpperCase()} raw: ${reply.slice(0, 160)}`, 'a');
-  if (protocol.parsePath(reply)) return reply;
+  let path = readPath(reply);
+  if (path) return { path, raw: reply };
 
   log('planner broke contract — re-asking with a nudge', 'err');
   reply = await askRole(
@@ -492,25 +866,88 @@ async function askForPath(prompt) {
       'Reply with ONE line only: the relative file path, or the word DONE. Nothing else.'
   );
   log(`${tag.toUpperCase()} retry: ${reply.slice(0, 160)}`, 'a');
-  return reply;
+  path = readPath(reply);
+  if (!path) {
+    const guess = salvagePath(reply);
+    if (guess) {
+      log(`planner still broke contract — taking "${guess}" out of its answer`, 'err');
+      return { path: guess, raw: reply };
+    }
+  }
+  return { path, raw: reply };
 }
 
-async function runProject(request) {
+/** Dev servers this session started, by project slug. */
+const servers = new Set();
+
+/** Tabs a Stop interrupted mid-reply; the next run reloads them first. */
+const needsReset = new Set();
+
+/**
+ * Stop every dev server we started, except one worth keeping.
+ *
+ * runProject only ever stopped the server for the project it was about to
+ * build, and Stop stopped nothing at all, so an aborted run - and every
+ * autopilot request, which derives a new slug each time - left a server holding
+ * a port until the window closed.
+ */
+async function stopServers(keep = null) {
+  for (const project of [...servers]) {
+    if (project === keep) continue;
+    servers.delete(project);
+    try {
+      const stopped = await tool.stop(project);
+      if (stopped) log(`dev server for ${project} stopped`, 'ok');
+    } catch {
+      /* it was not running */
+    }
+  }
+}
+
+/**
+ * Run the plan/build/review/audit loop, then verify what it produced.
+ *
+ * `opts.resume` carries a previous run's `written` + `note` so a project that
+ * died on file 10 continues instead of restarting the planner from zero.
+ */
+async function runProject(request, opts = {}) {
   const mode = currentMode();
   const project = protocol.slug(els.project.value || request);
   els.project.value = project;
+  run.project = project;
+  run.modeKey = mode.key;
   log(`project → workspace/${project}/  (mode: ${mode.label || mode.key})`, 'ok');
 
-  // A fresh run kills the old server for this project; the toolchain will
-  // start a new one after the build.
+  // Every dev server this session started, not just this project's: autopilot
+  // derives a NEW slug from every request, so N requests left N servers holding
+  // N ports until the window closed.
+  await stopServers();
+  // A fresh run kills the old server for this project even if a previous
+  // session started it; the toolchain will start a new one after the build.
   try {
     const stopped = await tool.stop(project);
     if (stopped) log('previous dev server stopped', 'ok');
-  } catch { /* nothing was running */ }
+  } catch {
+    /* nothing was running */
+  }
+
+  // A tab left mid-generation by a Stop cannot be typed into; the next run
+  // reloads it onto a fresh chat instead of failing five attempts deep.
+  if (needsReset.size) {
+    log(`recovering ${needsReset.size} tab(s) left mid-reply by the last stop`, 'err');
+    for (const tag of [...needsReset]) {
+      try {
+        await hardResetTab(tag);
+        needsReset.delete(tag);
+      } catch (e) {
+        log(`${tag.toUpperCase()}: ${e.message}`, 'err');
+      }
+    }
+  }
 
   // Framework modes start from a real scaffold so the agents only write the
-  // files that matter.
-  if (mode.scaffold) {
+  // files that matter. A resumed run already has one.
+  if (mode.scaffold && !opts.resume) {
     status(`scaffolding ${mode.key}`);
     log(`scaffolding ${mode.key} project…`);
     try {
@@ -534,43 +971,112 @@ async function runProject(request) {
   // BEFORE seeding, because seeding itself needs a readable reply.
   for (const tag of TAGS_ALL) {
     if (abort) throw new Error('stopped');
-    await rotateIfBloated(tag);
+    // Rotation now throws rather than silently continuing on an unseeded tab;
+    // here that is not fatal, because ensureSeeded is the very next thing.
+    try {
+      await rotateIfBloated(tag);
+    } catch (e) {
+      if (abort) throw e;
+      log(`${e.message} — reseeding it`, 'err');
+    }
   }
 
   // Contracts are installed automatically; nothing is ever typed into a chat
   // by hand. Mode-aware: switching mode reseeds.
   await ensureSeeded(mode.key);
 
-  status('planner: asking for path');
-  let reply = await askForPath(protocol.TAGS.request(request, mode, await existingFiles(project)));
-
-  const written = [];
+  const written = run.written;
   // The planner is allowed to re-name a file to REPLACE it (the auditor asks
   // for exactly that), so repeats are capped rather than treated as done.
   const writeCounts = new Map();
-  const MAX_WRITES_PER_PATH = 3;
   let note = null; // the auditor's last "what's still missing"
 
-  for (let i = 0; i < FILE_BACKSTOP; i++) {
-    if (abort) throw new Error('stopped');
+  if (opts.resume) {
+    for (const f of opts.resume.written || []) if (!written.includes(f)) written.push(f);
+    note = opts.resume.note || null;
+    log(`resuming: ${written.length} file(s) already written${note ? ` — auditor said: ${note}` : ''}`, 'ok');
+  }
+  run.note = note;
 
-    const filePath = protocol.parsePath(reply);
-    if (filePath === 'DONE') { log('planner says DONE', 'ok'); break; }
-    if (!filePath) throw new Error('planner did not return a usable path');
-    if ((writeCounts.get(filePath) || 0) >= MAX_WRITES_PER_PATH) {
-      log(`planner keeps returning ${filePath} — treating the project as done`, 'err');
+  let reply;
+  if (written.length) {
+    status('planner: next file?');
+    reply = await askForPath(protocol.TAGS.next(written, note, await existingFiles(project)));
+  } else {
+    status('planner: asking for path');
+    reply = await askForPath(protocol.TAGS.request(request, mode, await existingFiles(project)));
+  }
+
+  // The planner refusing to move on is not the same as the project being done.
+  let repeatStrikes = 0;
+
+  for (let round = 0; round < ROUND_BACKSTOP; round++) {
+    if (abort) throw new Error('stopped');
+    run.rounds = round + 1;
+
+    const over = budgetExceeded();
+    if (over) {
+      log(`${over} — wrapping up with what exists`, 'err');
       break;
     }
-    log(`path = ${filePath}${writeCounts.has(filePath) ? ' (rewrite)' : ''}`, 'ok');
+
+    const filePath = reply.path;
+    if (filePath === 'DONE') { log('planner says DONE', 'ok'); break; }
+    if (!filePath) {
+      // Was a throw, which abandoned the whole run: a nine-file project died
+      // because the planner answered file ten in prose, and nothing already
+      // written was ever installed, run or previewed.
+      log(
+        `planner did not return a usable path — building stops here: ` +
+          `"${protocol.clean(reply.raw).replace(/\n/g, ' ').slice(0, 120)}"`,
+        'err'
+      );
+      break;
+    }
+    if (written.length >= FILE_BACKSTOP) {
+      log(`file backstop (${FILE_BACKSTOP} files) reached — stopping the loop`, 'err');
+      break;
+    }
+
+    const seen = writeCounts.get(filePath) || 0;
+    if (seen >= MAX_WRITES_PER_PATH) {
+      // A deliberate rewrite is legitimate - it is exactly what the auditor
+      // asks for - so the planner is told to pick something else rather than
+      // the project being declared finished behind its back.
+      repeatStrikes++;
+      if (repeatStrikes > 2) {
+        log(`planner will not move past ${filePath} — ending the build here`, 'err');
+        break;
+      }
+      log(`${filePath} has already been written ${seen} times — asking for a different file`, 'err');
+      reply = await askForPath(
+        `${filePath} has been written ${seen} times already and will not be written again.\n` +
+          `Reply with ONE different relative file path that is still needed, or the single word DONE.`
+      );
+      continue;
+    }
+    log(`path = ${filePath}${seen ? ' (rewrite)' : ''}`, 'ok');
 
     const res = await buildFile(project, filePath, request, mode);
-    if (!res) throw new Error(`never got PRINT for ${filePath}`);
-    writeCounts.set(filePath, (writeCounts.get(filePath) || 0) + 1);
-    if (!written.includes(filePath)) written.push(filePath);
-    if (written.length >= FILE_BACKSTOP) {
-      log(`file backstop (${FILE_BACKSTOP}) reached — stopping the loop`, 'err');
-      break;
+    if (!res) {
+      // Was a throw. One file the builder cannot get right must not cost every
+      // file that is already on disk.
+      run.failedFiles.push(filePath);
+      log(`no usable ${filePath} after every attempt — leaving it out of the project`, 'err');
+      if (run.failedFiles.length > 1) {
+        log('two files have now failed to build — finishing with what exists', 'err');
+        break;
+      }
+      status('planner: next file?');
+      reply = await askForPath(
+        `${filePath} could not be produced and has been skipped.\n` +
+          `Reply with ONE different relative file path that is still needed, or the single word DONE.`
+      );
+      continue;
     }
+    writeCounts.set(filePath, seen + 1);
+    if (!written.includes(filePath)) written.push(filePath);
+    await saveRunFile(project);
 
     // The auditor looks at the whole project and tells the planner what is
     // still missing - this is the hand-off that keeps the loop going until the
@@ -584,8 +1090,10 @@ async function runProject(request) {
       log(note ? `auditor: ${note}` : 'auditor: DONE', note ? 'a' : 'ok');
       auditDone = !note;
     } catch (e) {
+      if (abort) throw e;
       log(`auditor unavailable (${e.message}) — continuing`, 'err');
     }
+    run.note = note;
     if (auditDone) break;
 
     status('planner: next file?');
@@ -596,45 +1104,7 @@ async function runProject(request) {
   // becomes the next instruction, which is the whole point of the loop.
   let preview = null;
   if (written.length && !abort) {
-    for (let round = 0; round < 3; round++) {
-      if (abort) break;
-      try {
-        preview = await verifyProject(project, request, mode);
-      } catch (e) {
-        log(`verify failed: ${e.message}`, 'err');
-        break;
-      }
-      if (preview.ok || preview.skipped) break;
-      if (round === 2) break; // two fix rounds spent
-
-      const fix = preview.detail || `${preview.stage} failed`;
-      log(`fixing: ${fix.split('\n')[0]}`, 'err');
-
-      // A stack trace names the file and line, so try a surgical patch before
-      // regenerating the whole file - a 48KB rewrite to fix one loop wastes a
-      // full generation and risks breaking everything that already worked.
-      const patched = await tryPatch(project, fix);
-      if (patched) {
-        if (!written.includes(patched)) written.push(patched);
-        continue;
-      }
-
-      status('planner: fixing');
-      const fixReply = await askForPath(
-        `The project was built and run. It did not pass.\n` +
-          `PROBLEM: ${protocol.condense(fix, 1200)}\n\nReply with the ONE file path to rewrite to fix this.`
-      );
-      const fixPath = protocol.parsePath(fixReply);
-      if (!fixPath || fixPath === 'DONE') break;
-      const res = await buildFile(
-        project,
-        fixPath,
-        `${request}\n\nFIX REQUIRED: ${protocol.condense(fix, 1200)}`,
-        mode
-      );
-      if (!res) break;
-      if (!written.includes(fixPath)) written.push(fixPath);
-    }
+    preview = await verifyAndFix(project, request, mode, written);
 
     // Passing or not, if we know where the project is running, show it. The
     // server stays up for the user - the next run (or quitting) stops it.
@@ -644,13 +1114,177 @@ async function runProject(request) {
     if (preview && preview.url) showPreview(preview.url);
   }
 
-  const verdict = preview?.skipped
-    ? 'not previewable'
-    : preview
-      ? (preview.ok ? 'preview PASSED' : 'preview still failing')
-      : 'not verified';
-  log(`project done — ${written.length} file(s) in workspace/${project}/ — ${verdict}`, 'ok');
+  await saveRunFile(project, preview);
   return { project, written, preview };
+}
+
+/** One line that identifies a failure, so a repeat of it is recognisable. */
+function signatureOf(text) {
+  return String(text || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)[0]
+    ?.toLowerCase()
+    .replace(/\d+/g, '#')
+    .slice(0, 120) || 'unknown failure';
+}
+
+/** The remedies for a failing project, weakest and cheapest first. */
+const FIX_LADDER = ['patch', 'rewrite', 'replan'];
+
+/**
+ * Verify the project, and when it fails, fix it - escalating, never looping.
+ *
+ * The same error coming back means the last remedy did not work, so the next
+ * round climbs the ladder instead of repeating it: patch the line the trace
+ * names, then rewrite that whole file, then ask the planner which file is
+ * really at fault. Three rounds of re-patching the wrong file is how a run used
+ * to spend twenty minutes going nowhere.
+ */
+async function verifyAndFix(project, request, mode, written) {
+  const spentOn = new Map(); // failure signature -> remedies already tried
+  let preview = null;
+
+  for (let round = 0; round < 4; round++) {
+    if (abort) throw new Error('stopped');
+    const over = budgetExceeded();
+    if (over) {
+      log(`${over} — skipping further fix rounds`, 'err');
+      break;
+    }
+
+    try {
+      preview = await verifyProject(project, request, mode);
+    } catch (e) {
+      // A stopped run must never be reported as a finished one.
+      if (abort) throw e;
+      log(`verify failed: ${e.message}`, 'err');
+      break;
+    }
+    if (preview.ok || preview.skipped) break;
+
+    const fix = preview.detail || `${preview.stage} failed`;
+    const sig = signatureOf(fix);
+    const spent = spentOn.get(sig) || 0;
+    spentOn.set(sig, spent + 1);
+    if (spent >= FIX_LADDER.length) {
+      log('the same failure survived patch, rewrite and replan — stopping the fix loop', 'err');
+      break;
+    }
+    log(`fixing (${FIX_LADDER[spent]}): ${fix.split('\n')[0]}`, 'err');
+
+    // The remedies talk to the builder and the planner, and "Verify again" can
+    // reach this point with nothing seeded. Free when they already are.
+    await ensureSeeded(mode.key);
+
+    // Each rung falls forward when it cannot act at all, so an error with no
+    // file location does not waste a round.
+    let acted = null;
+    if (spent === 0) acted = await tryPatch(project, fix);
+    if (!acted && spent <= 1) acted = await rewriteForFix(project, request, mode, fix);
+    if (!acted) acted = await replanFix(project, request, mode, fix);
+    if (!acted) {
+      log('nothing left to try for this failure', 'err');
+      break;
+    }
+    if (!written.includes(acted)) written.push(acted);
+    await saveRunFile(project, preview);
+  }
+  return preview;
+}
+
+/** Rewrite the file the error itself names. Null when it names none. */
+async function rewriteForFix(project, request, mode, fix) {
+  const patch = (window.browsersmith || window.buildgpt).patch;
+  const loc = patch && patch.parseErrorLocation(fix);
+  if (!loc) return null;
+  const file = projectRelative(project, loc.file);
+  log(`rewriting ${file} in full`, 'err');
+  const res = await buildFile(
+    project,
+    file,
+    `${request}\n\nFIX REQUIRED: ${protocol.condense(scrubPaths(fix), 1200)}`,
+    mode
+  );
+  return res ? file : null;
+}
+
+/** Ask the planner which file is really at fault, then rewrite that. */
+async function replanFix(project, request, mode, fix) {
+  status('planner: fixing');
+  const safeFix = protocol.condense(scrubPaths(fix), 1200);
+  const { path: fixPath } = await askForPath(
+    `The project was built and run. It did not pass.\n` +
+      `PROBLEM: ${safeFix}\n\nReply with the ONE file path to rewrite to fix this.`
+  );
+  if (!fixPath || fixPath === 'DONE') return null;
+  const res = await buildFile(project, fixPath, `${request}\n\nFIX REQUIRED: ${safeFix}`, mode);
+  return res ? fixPath : null;
+}
+
+/**
+ * What was verified, and what was not - in plain words.
+ *
+ * "project done - 0 file(s) ... not verified" followed by a green "done" pill
+ * was the single most dishonest thing the app said.
+ */
+const STAGE_WORDS = {
+  install: 'the install/build step',
+  serve: 'starting the server',
+  run: 'running it',
+  screenshot: 'the screenshot',
+  preview: 'the check of the screenshot',
+};
+
+function verifiedLine(preview) {
+  if (!run.written.length) return 'nothing was written, so nothing was verified';
+  if (!preview) return 'NOT verified — the project was never installed, run or previewed';
+  if (preview.skipped) return 'nothing runnable to verify (no dev script and no entry point found)';
+  if (preview.ok) {
+    if (preview.stage === 'run') return 'ran it and the auditor judged its output a PASS';
+    const how = /^https?:/i.test(preview.url || '') ? 'served it' : 'opened the page from disk';
+    return `${how}, screenshotted it, and the auditor judged the result a PASS`;
+  }
+  const why = (preview.detail || '').split('\n')[0] || 'no detail';
+  const stage = STAGE_WORDS[preview.stage] || preview.stage;
+  return `NOT verified — ${stage} failed: ${why.slice(0, 160)}`;
+}
+
+/**
+ * The same conclusion, safe to type into a chat: no error text, no traces.
+ * Build output carries absolute paths, and a chat tab must never see one.
+ */
+function verifiedShort(preview) {
+  if (!run.written.length) return 'nothing was written, so nothing was verified';
+  if (!preview) return 'the project was not installed, run or previewed';
+  if (preview.skipped) return 'there was nothing runnable to verify';
+  if (preview.ok) return 'it was run and judged working';
+  return `it did not pass at ${STAGE_WORDS[preview.stage] || preview.stage}`;
+}
+
+/** The closing report. Every claim here is one this run can actually support. */
+function reportRun(preview, outcome) {
+  const elapsed = mmss(Date.now() - run.startedAt);
+  log(
+    `run ${outcome} — ${run.written.length} file(s) in workspace/${run.project}/ in ${elapsed} ` +
+      `(${run.rounds} planner round(s), ${run.messages} chat message(s))`,
+    outcome === 'done' ? 'ok' : 'err'
+  );
+  log(`verified: ${verifiedLine(preview)}`, preview && preview.ok ? 'ok' : 'err');
+  if (run.unreviewed.length) {
+    // A file can be written unreviewed more than once (a patch, then another);
+    // the user wants the set, not the tally.
+    log(
+      `UNREVIEWED — written without a reviewer PRINT: ${[...new Set(run.unreviewed)].join(', ')}`,
+      'err'
+    );
+  }
+  if (run.failedFiles.length) {
+    log(`never written: ${run.failedFiles.join(', ')}`, 'err');
+  }
+  if (run.internalError) {
+    log(`an internal error happened during this run: ${run.internalError}`, 'err');
+  }
 }
 
 /* --------------------------------------------------------------- patching */
@@ -663,18 +1297,36 @@ async function runProject(request) {
  * name a location or the builder cannot express the fix as a patch - a wrong
  * patch silently corrupts a file, so anything uncertain declines.
  */
+/**
+ * The project-relative form of a file a stack trace names.
+ *
+ * Traces quote absolute paths, and everything up to and including the project
+ * folder is ours: without this the read below always failed and every patch
+ * silently degraded into a full rewrite.
+ */
+function projectRelative(project, file) {
+  const marker = `${project}/`;
+  const at = String(file || '').replace(/\\/g, '/').lastIndexOf(marker);
+  return at >= 0 ? file.replace(/\\/g, '/').slice(at + marker.length) : file;
+}
+
 async function tryPatch(project, errorText) {
   const patch = (window.browsersmith || window.buildgpt).patch;
   if (!patch) return null;
 
-  const loc = patch.parseErrorLocation(errorText);
-  if (!loc) return null;
+  const parsed = patch.parseErrorLocation(errorText);
+  if (!parsed) return null;
+  const loc = { ...parsed, file: projectRelative(project, parsed.file) };
 
   let source;
   try {
     source = await fs.read(`${project}/${loc.file}`);
-  } catch {
-    return null; // the trace names a file we did not write
+  } catch (e) {
+    // Silence here meant the run degraded to a full rewrite with no
+    // explanation - a locked file and a trace naming somebody else's file
+    // looked identical.
+    log(`patch skipped: cannot read ${loc.file} (${e.message}) — rewriting instead`, 'err');
+    return null;
   }
 
   log(`patching ${loc.file}:${loc.line} instead of rewriting it`, 'ok');
@@ -685,11 +1337,12 @@ async function tryPatch(project, errorText) {
     reply = await askRole(
       ROLES.builder,
       `This file is throwing an error at line ${loc.line}.\n\n` +
-        `ERROR:\n${protocol.condense(errorText, 800)}\n\n` +
+        `ERROR:\n${protocol.condense(scrubPaths(errorText), 800)}\n\n` +
         `FILE (${loc.file}), lines around the error:\n${patch.excerpt(source, loc.line)}\n\n` +
         patch.PATCH_FORMAT
     );
   } catch (e) {
+    if (abort) throw e; // unwind now rather than falling through to a rewrite
     log(`patch attempt failed (${e.message}) — rewriting instead`, 'err');
     return null;
   }
@@ -712,8 +1365,30 @@ async function tryPatch(project, errorText) {
   }
   if (failed.length) log(`${failed.length} of ${patches.length} hunks did not apply`, 'err');
 
-  const res = await fs.write(`${project}/${loc.file}`, text);
-  log(`patched ${applied.length} hunk(s) in ${loc.file} (${res.bytes} bytes)`, 'ok');
+  // This path never sees the reviewer, so the result is vetted here or not at
+  // all: models wrap patches in fences constantly, and a spliced-in ``` or a
+  // replacement that truncates the file would go straight to disk.
+  const vetted = protocol.stripStrayFences(text, loc.file);
+  const bad = protocol.rejectReason(vetted);
+  if (bad) {
+    log(`patched ${loc.file} did not hold up (${bad}) — rewriting instead`, 'err');
+    return null;
+  }
+
+  const res = await fs.write(`${project}/${loc.file}`, vetted);
+  run.unreviewed.push(loc.file);
+  log(
+    `UNREVIEWED: patched ${applied.length} hunk(s) into ${loc.file} (${res.bytes} bytes) — ` +
+      `a patch is applied without a reviewer verdict`,
+    'err'
+  );
+  logDetail(
+    `patch applied to ${loc.file} — ${applied.length} hunk(s)`,
+    applied
+      .map((p, i) => `--- hunk ${i + 1} · before\n${p.find}\n--- hunk ${i + 1} · after\n${p.replace}`)
+      .join('\n\n'),
+    'ok'
+  );
   await refreshFiles();
   return loc.file;
 }
@@ -795,6 +1470,7 @@ async function verifyByPlan(project, request, p) {
     try {
       const srv = await tool.serveCmd(project, p.serve.cmd, p.serve.args);
       url = srv.url;
+      servers.add(project); // so Stop and the next run can take the port back
       log(`server up at ${url}`, 'ok');
     } catch (e) {
       const errs = await serverErrorText(project);
@@ -847,6 +1523,33 @@ function safeLocation(url, project) {
   return `workspace/${project}/${rel}`;
 }
 
+/** The workspace root, resolved once, purely so it can be redacted. */
+let workspaceRoot = null;
+fs.root()
+  .then((r) => {
+    workspaceRoot = r;
+  })
+  .catch(() => {});
+
+const HOME_DIR_RE = /(?:[A-Za-z]:)?[\\/](?:Users|home)[\\/][^\\/\s"'`]+/gi;
+
+/**
+ * Remove absolute filesystem paths from anything about to be typed into a chat.
+ *
+ * Install output, stack traces and framework overlays are full of them, and on
+ * Windows every one carries the user's account name. The relative tail is what
+ * makes the error useful, and it survives untouched - patch.parseErrorLocation
+ * still finds "app/page.tsx:12" inside the result.
+ */
+function scrubPaths(text) {
+  let t = String(text || '');
+  if (workspaceRoot) {
+    t = t.split(workspaceRoot).join('workspace');
+    t = t.split(workspaceRoot.replace(/\\/g, '/')).join('workspace');
+  }
+  return t.replace(HOME_DIR_RE, '~');
+}
+
 /** Dev-server compile errors, if the bridge exposes them. */
 async function serverErrorText(project) {
   try {
@@ -882,11 +1585,15 @@ async function judgePage(project, request, p, url, runOutput) {
     status(`${QA.toUpperCase()}: judging the preview`);
     verdict = await askWithImage(
       QA,
-      `Screenshot of the running project at ${url}.\n` +
+      // safeLocation, never the raw URL: a file:// preview path carries the
+      // absolute path and therefore the user's account name.
+      `Screenshot of the running project at ${safeLocation(url, project)}.\n` +
         `REQUEST: ${request}\n` +
         (drove ? `The harness already ${drove}, so this is the app in use.\n` : '') +
-        (runOutput ? `Program output:\n${runOutput}\n` : '') +
-        (diagnostics ? `Errors detected on the page:\n${diagnostics}\n` : '') +
+        // Build output and framework overlays quote absolute paths; the tab
+        // gets the useful tail of them and never the OS account name.
+        (runOutput ? `Program output:\n${scrubPaths(runOutput)}\n` : '') +
+        (diagnostics ? `Errors detected on the page:\n${scrubPaths(diagnostics)}\n` : '') +
         `\nDoes this look like a working result for the request?\n` +
         `A title screen, menu or landing state is a PASS - you do not need to see it mid-use.\n` +
         `Reply FIX only if something is genuinely broken: an error overlay, a blank page, ` +
@@ -917,7 +1624,7 @@ async function judgeText(project, request, p, output) {
   const verdict = await askRole(
     QA,
     `The project was run with: ${p.run ? p.run.label : 'its entry point'}\n` +
-      `OUTPUT:\n${output}\n\nREQUEST: ${request}\n\n` +
+      `OUTPUT:\n${scrubPaths(output)}\n\nREQUEST: ${request}\n\n` +
       `Does this output satisfy the request? Be generous - if it clearly works, say PASS.\n` +
       `Reply PASS, or FIX followed by one short line.`
   );
@@ -954,6 +1661,7 @@ async function verifyInBrowser(project, request, mode) {
       try {
         const srv = await tool.serve(project, script);
         url = srv.url;
+        servers.add(project); // so Stop and the next run can take the port back
         log(`dev server up at ${url}`, 'ok');
       } catch (e) {
         log(`dev server failed: ${e.message}`, 'err');
@@ -987,7 +1695,8 @@ async function verifyInBrowser(project, request, mode) {
     status(`${QA.toUpperCase()}: reviewing the preview`);
     verdict = await askWithImage(
       QA,
-      `This is a screenshot of the running project at ${url}.\n` +
+      // safeLocation, never the raw URL - a file:// path leaks the OS username.
+      `This is a screenshot of the running project at ${safeLocation(url, project)}.\n` +
         `ORIGINAL REQUEST: ${request}\n\n` +
         `Does it satisfy the request? Reply PASS, or FIX followed by one short line.`
     );
@@ -1011,9 +1720,19 @@ async function verifyInBrowser(project, request, mode) {
 async function parsePassFix(verdict) {
   const read = (v) => {
     const t = protocol.clean(v);
-    const pass = /\bPASS\b/i.test(t) && !/\bFIX\b/i.test(t);
-    const fix = /\bFIX\b/i.test(t);
-    return { pass, fix, detail: pass ? null : t.replace(/^.*\bFIX\b[:\s-]*/is, '').split('\n')[0] };
+    // Decide on the FIRST verdict word, not on the presence of either: the old
+    // `PASS && !FIX` test inverted "PASS - no fix needed" into a failure, and
+    // the loop then rewrote a file that was already correct to fix the
+    // problem "needed".
+    const m = t.match(/\b(PASS|FIX)\b/i);
+    const pass = !!m && m[1].toUpperCase() === 'PASS';
+    const fix = !!m && !pass;
+    return {
+      pass,
+      fix,
+      // Only a real FIX carries a reason; anything else keeps the first line.
+      detail: pass ? null : t.slice(m ? m.index + m[0].length : 0).replace(/^[:\s-]*/, '').split('\n')[0],
+    };
   };
   let r = read(verdict);
   if (r.pass || r.fix) return r;
@@ -1050,7 +1769,7 @@ async function verifyByRunning(project, request, mode) {
   const verdict = await askRole(
     QA,
     `The project was executed with: ${cmd} ${args.join(' ')} (${exitNote}).\n` +
-      `OUTPUT (tail):\n${tail}\n\n` +
+      `OUTPUT (tail):\n${scrubPaths(tail)}\n\n` +
       `ORIGINAL REQUEST: ${request}\n\n` +
       `Does the output satisfy the request? Reply PASS, or FIX followed by one short line.`
   );
@@ -1093,7 +1812,7 @@ async function waitForPastedImage(wv, before) {
 async function askWithImage(tag, text) {
   const wv = wvOf(tag);
   const id = wv.getWebContentsId();
-  markBusy(tag, true);
+  markBusy(tag, true, run.phase);
   try {
     await drive(wv, 'prepare', {}, 15000);
     // An unreadable baseline must not look like "the image arrived", so a
@@ -1107,6 +1826,7 @@ async function askWithImage(tag, text) {
     await new Promise((r) => setTimeout(r, 500));
     const clicked = await drive(wv, 'clickSend', {}, 8000);
     if (!clicked) await tabs.enter(id);
+    run.messages++;
     return await drive(wv, 'awaitReply', { opts: { text, quietMs: 6000, timeoutMs: 600000 } }, 630000);
   } finally {
     markBusy(tag, false);
@@ -1131,28 +1851,190 @@ async function refreshFiles() {
   }
 }
 
-els.run.addEventListener('click', async () => {
-  const request = els.prompt.value.trim();
-  if (!request || running) return;
-  running = true; abort = false;
-  els.run.disabled = true; els.stop.disabled = false;
+/**
+ * Buttons this file needs. They are created here rather than assumed, so the
+ * renderer keeps working whichever version of the page it is loaded into.
+ */
+function ensureButton(id, label, title) {
+  let btn = document.getElementById(id);
+  if (btn) return btn;
+  btn = document.createElement('button');
+  btn.id = id;
+  btn.textContent = label;
+  btn.title = title;
+  const row = els.stop.parentElement || document.body;
+  // The row was laid out for two buttons; four must wrap rather than be clipped
+  // off the edge of a narrow sidebar.
+  if (row.style) row.style.flexWrap = 'wrap';
+  row.appendChild(btn);
+  return btn;
+}
+
+els.resume = ensureButton(
+  'btn-resume',
+  'Resume',
+  'Continue the last run for this project instead of starting over'
+);
+els.verify = ensureButton(
+  'btn-verify',
+  'Verify again',
+  'Install, run, screenshot and judge the current project without rebuilding it'
+);
+
+/** One place that decides what a finished run is allowed to claim. */
+function finishRun(preview, outcome) {
+  run.outcome = outcome;
+  run.active = false;
+  reportRun(preview, outcome);
+  status(outcome);
+}
+
+function startingRun() {
+  running = true;
+  abort = false;
+  els.run.disabled = true;
+  els.resume.disabled = true;
+  els.verify.disabled = true;
+  els.stop.disabled = false;
+  els.stop.textContent = 'Stop';
+}
+
+async function endingRun() {
+  running = false;
+  abort = false; // a leftover abort would reject every later tab command
+  run.active = false;
+  els.run.disabled = false;
+  els.resume.disabled = false;
+  els.verify.disabled = false;
+  els.stop.disabled = true;
+  els.stop.textContent = 'Stop';
+  // Our own relay messages are now all over the transcript; hold autopilot off
+  // long enough to re-baseline against them.
+  autopilotCooldownUntil = Date.now() + 30000;
+  watchBaseline = await tabTranscript(els.a).catch(() => null);
+}
+
+/** Run or resume, with one honest terminal state at the end of it. */
+async function startRun(request, opts = {}) {
+  if (running) return;
+  if (!request) {
+    log('describe what to build first', 'err');
+    els.prompt.focus();
+    return;
+  }
+  startingRun();
+  resetRun(protocol.slug(els.project.value || request), request, (currentMode() || {}).key);
+  let preview = null;
   try {
-    await runProject(request);
-    status('done');
+    const res = await runProject(request, opts);
+    preview = res.preview;
+    // A run that produced nothing is not a success, and neither is one the user
+    // stopped: both used to end on a green "done".
+    if (!res.written.length) finishRun(preview, 'failed');
+    else if (preview && (preview.ok || preview.skipped)) finishRun(preview, 'done');
+    else finishRun(preview, 'partial');
   } catch (err) {
+    const stopped = abort;
     log(String(err.message || err), 'err');
-    status('failed');
+    finishRun(preview, stopped ? 'stopped' : 'failed');
+    // Nothing is going to look at this project now; do not leave its server
+    // holding a port.
+    await stopServers().catch(() => {});
   } finally {
-    running = false;
-    // Our own relay messages are now all over the transcript; hold autopilot
-    // off long enough to re-baseline against them.
-    autopilotCooldownUntil = Date.now() + 30000;
-    watchBaseline = null;
-    els.run.disabled = false; els.stop.disabled = true;
+    await endingRun();
+  }
+}
+
+els.run.addEventListener('click', () => startRun(els.prompt.value.trim()));
+
+els.resume.addEventListener('click', async () => {
+  if (running) return;
+  const project = currentProjectSlug();
+  if (!project) {
+    log('name a project to resume (the Project box)', 'err');
+    return;
+  }
+  const prev = await loadRunFile(project);
+  if (!prev) {
+    log(`no saved run in workspace/${project}/ — press Run to start one`, 'err');
+    return;
+  }
+  const request = prev.request || els.prompt.value.trim();
+  els.prompt.value = request;
+  if (prev.mode && [...els.mode.options].some((o) => o.value === prev.mode)) {
+    els.mode.value = prev.mode;
+  }
+  log(
+    `resuming ${project}: ${(prev.written || []).length} file(s) written, ` +
+      `last outcome "${prev.outcome || 'unknown'}"`,
+    'ok'
+  );
+  await startRun(request, { resume: { written: prev.written || [], note: prev.note || null } });
+});
+
+// Verification is a standalone function; without this the only way to reach it
+// is a full plan-build-review run that re-generates files the user just fixed.
+els.verify.addEventListener('click', async () => {
+  if (running) return;
+  const project = currentProjectSlug();
+  if (!project) {
+    log('name a project to verify (the Project box)', 'err');
+    return;
+  }
+  const prev = await loadRunFile(project);
+  const request = els.prompt.value.trim() || prev?.request || 'the project as written';
+  startingRun();
+  resetRun(project, request, (currentMode() || {}).key);
+  let preview = null;
+  try {
+    // The report has to describe what is on disk, not "nothing was written":
+    // this path verifies files a previous run (or the user) produced.
+    run.written = prev?.written?.length ? [...prev.written] : await existingFiles(project);
+    preview = await verifyAndFix(project, request, currentMode(), run.written);
+    if (preview && preview.url) showPreview(preview.url);
+    finishRun(preview, preview && (preview.ok || preview.skipped) ? 'done' : 'partial');
+  } catch (err) {
+    const stopped = abort;
+    log(String(err.message || err), 'err');
+    finishRun(preview, stopped ? 'stopped' : 'failed');
+  } finally {
+    await endingRun();
   }
 });
 
-els.stop.addEventListener('click', () => { abort = true; log('stop requested'); });
+els.stop.addEventListener('click', async () => {
+  if (!running || abort) return;
+  abort = true;
+  // Stop used to set a flag polled at loop boundaries while an awaitReply held
+  // for up to 630s: the button stayed enabled, a second click did nothing, and
+  // the app looked hung for ten minutes.
+  els.stop.disabled = true;
+  els.stop.textContent = 'Stopping…';
+  status('stopping');
+  const cancelled = cancelPending();
+  log(`stop requested — cancelled ${cancelled} in-flight tab command(s)`, 'err');
+  // Whatever those tabs were generating, they are mid-reply now; the next run
+  // reloads them rather than typing into a wedged composer.
+  for (const tag of busyTags) needsReset.add(tag);
+  await stopServers().catch(() => {});
+});
+
+/**
+ * A rejection nobody awaited must never leave the pill claiming something
+ * untrue - "planner: next file?" forever, on a run that died three minutes ago.
+ */
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = String(e.reason?.message || e.reason || 'unknown error');
+  run.internalError = msg;
+  log(`internal error (unhandled rejection): ${msg}`, 'err');
+  if (!running && !TERMINAL_STATES.includes(run.phase)) status('idle');
+});
+
+window.addEventListener('error', (e) => {
+  run.internalError = String(e.message || 'script error');
+  log(`internal error: ${run.internalError}`, 'err');
+  if (!running && !TERMINAL_STATES.includes(run.phase)) status('idle');
+});
 
 /* ----------------------------------------------------------------- models */
 
@@ -1211,10 +2093,23 @@ for (const btn of document.querySelectorAll('[data-models]')) {
   btn.addEventListener('click', () => loadModels(btn.dataset.models, { attempts: 3 }));
 }
 
+/**
+ * Anything that touches a composer has to wait for the loop.
+ *
+ * Opening the site's model popover in - or clearing - the composer the run is
+ * typing into corrupts both. loadModels already refused; these did not.
+ */
+function busyWithRun(what) {
+  if (!running) return false;
+  log(`${what} is unavailable while a run is going — press Stop first`, 'err');
+  return true;
+}
+
 for (const tag of TAGS_ALL) {
   const sel = modelSelect(tag);
   sel.addEventListener('change', async () => {
     if (!sel.value) return;
+    if (busyWithRun('switching model')) return;
     try {
       const r = await drive(wvOf(tag), 'selectModel', { name: sel.value }, 25000);
       log(`${tag.toUpperCase()}: model → ${r.selected}${r.alreadyActive ? ' (already)' : ''}`, 'ok');
@@ -1266,6 +2161,7 @@ setInterval(syncAllModelsOptions, 4000);
 els.modelAll.addEventListener('change', async () => {
   const name = els.modelAll.value;
   if (!name) return;
+  if (busyWithRun('setting every tab’s model')) return;
   log(`setting every tab to "${name}"…`);
   // Serialised for the same reason the initial load is: concurrent dropdowns
   // in different tabs interfere with each other.
@@ -1285,6 +2181,9 @@ els.modelAll.addEventListener('change', async () => {
 /* -------------------------------------------------------------- self test */
 
 els.selftest.addEventListener('click', async () => {
+  // It types a marker into all four composers and then clears them: mid-run
+  // that wipes the prompt the loop just typed.
+  if (busyWithRun('the self-test')) return;
   status('self-testing');
   let allPass = true;
   for (const t of TAGS_ALL) {
@@ -1338,6 +2237,7 @@ els.selftest.addEventListener('click', async () => {
 
 document.querySelectorAll('[data-pick]').forEach((btn) => {
   btn.addEventListener('click', () => {
+    if (busyWithRun('the element picker')) return;
     const [tab, which] = btn.dataset.pick.split('-');
     drive(wvOf(tab), 'pick', { which }, 5000).catch(() => {});
     log(`click the ${which} in tab ${tab.toUpperCase()}`);
@@ -1373,17 +2273,55 @@ const PROTOCOL_WORDS = /^\W*(DONE|PRINT|RETRY|READY|PASS|FIX)\W*$/i;
 
 let autopilotCooldownUntil = 0;
 let pollInFlight = false;
+/** Transcript length of the last delta we looked at and passed on. */
+let ignoredAt = -1;
+
+/**
+ * What the human actually typed, without tab A's own answer stuck to it.
+ *
+ * transcriptTail is a raw character slice of the transcript, and tab A is the
+ * PLANNER - so it answers the human's message with a file path and the delta
+ * contains both. That went in verbatim as the build request AND as the folder
+ * name, producing projects called "build-me-a-snake-game-app-page-tsx".
+ */
+let canReadUserMessage = true;
+
+async function readNewRequest(delta) {
+  // Newer preloads can hand back the newest user message directly; older ones
+  // reject with "unknown cmd", which is the signal to stop asking and fall
+  // back to slicing the transcript.
+  if (canReadUserMessage) {
+    const direct = await drive(els.a, 'lastUserMessage', {}, 8000).catch((e) => {
+      if (/unknown cmd/i.test(String(e.message || e))) canReadUserMessage = false;
+      return null;
+    });
+    if (direct && String(direct).trim()) return protocol.clean(direct);
+  }
+  const raw = await drive(els.a, 'transcriptTail', { tail: delta }, 8000).catch(() => '');
+  return stripPlannerReply(protocol.clean(raw));
+}
+
+/** Drop trailing lines that are tab A answering us with a path or DONE. */
+function stripPlannerReply(text) {
+  const lines = String(text || '').split('\n');
+  while (lines.length) {
+    const last = lines[lines.length - 1].trim();
+    if (!last || protocol.parsePath(last)) lines.pop();
+    else break;
+  }
+  return lines.join('\n').trim();
+}
 
 async function pollAutopilot() {
   if (!autopilot || running || pollInFlight) return;
   pollInFlight = true;
   try {
-    // After a run ends, the transcript is full of our own messages. Re-baseline
-    // instead of reading them as a new instruction.
-    if (Date.now() < autopilotCooldownUntil) {
-      watchBaseline = null;
-      return;
-    }
+    // After a run ends the transcript is full of our own messages, and the
+    // baseline was re-read once at the end of the run. Do NOT null it on every
+    // tick: that swallowed anything typed in the 30 seconds after a build
+    // finished - the most natural moment to type the next request.
+    if (Date.now() < autopilotCooldownUntil) return;
+
     let chars;
     try {
       chars = await tabTranscript(els.a);
@@ -1401,60 +2339,96 @@ async function pollAutopilot() {
     await new Promise((r) => setTimeout(r, 4000));
     const settled = await tabTranscript(els.a).catch(() => chars);
     if (settled !== chars) return; // still streaming — check again next tick
+    // Already looked at this exact transcript and passed on it. The baseline
+    // deliberately stays put for a too-short delta, so without this the same
+    // line would be re-read, and re-logged, every five seconds.
+    if (settled === ignoredAt) return;
 
     // Read only the DELTA since the baseline: a fixed-size tail drags earlier
     // protocol traffic into view, which either vetoes real requests or feeds
     // stale text into the build.
-    const delta = Math.min(Math.max(settled - watchBaseline, 0) + 100, 4000);
-    watchBaseline = settled;
-    const text = await drive(els.a, 'transcriptTail', { tail: delta }, 8000).catch(() => '');
-    const request = protocol.clean(text);
-    if (!request) return;
-    if (request.length < 12) return;            // "DONE", "ok", stray words
-    if (PROTOCOL_WORDS.test(request)) return;
-    if (OWN_TRAFFIC.test(request)) return;      // our own relay, not a human
+    const grew = Math.max(settled - watchBaseline, 0);
+    const request = await readNewRequest(Math.min(grew + 100, 4000));
+
+    // The baseline used to advance HERE, before the checks below, so every
+    // rejected delta was skipped forever and silently. It now advances only
+    // when the text is genuinely ours (or genuinely used).
+    if (!request) {
+      watchBaseline = settled;
+      log(`autopilot: ignored ${grew} new chars — nothing readable in them`);
+      return;
+    }
+    if (OWN_TRAFFIC.test(request)) {
+      watchBaseline = settled;
+      log(`autopilot: ignored ${grew} chars — that was our own relay traffic`);
+      return;
+    }
+    if (PROTOCOL_WORDS.test(request) || request.length < 12) {
+      // Deliberately not consumed: a real request typed right after this one
+      // must still be visible in the next delta.
+      ignoredAt = settled;
+      log(`autopilot: ignored "${request.slice(0, 40)}" — too short to be a request`);
+      return;
+    }
 
     if (running) return; // a Run started while we were settling
-    log('autopilot: new chat message detected, taking over', 'ok');
+    watchBaseline = settled;
+    log(`autopilot: new request — "${request.replace(/\n/g, ' ').slice(0, 120)}"`, 'ok');
     await runAutopilot(request);
   } finally {
     pollInFlight = false;
   }
 }
 
+/** How long the user gets to veto an autopilot build with Stop. */
+const AUTOPILOT_GRACE_MS = 3000;
+
 async function runAutopilot(request) {
   if (running) return;
-  running = true;
   // Stop sets abort and only the manual Run handler cleared it, so one Stop
-  // press bricked autopilot for the rest of the session.
-  abort = false;
-  els.run.disabled = true;
-  els.stop.disabled = false;
+  // press bricked autopilot for the rest of the session. startingRun clears it.
+  startingRun();
+  els.prompt.value = request;
+  // A fresh autopilot request gets its own folder; reusing the previous slug
+  // would pollute the new project with the old one's files.
+  els.project.value = protocol.slug(request);
+  status('autopilot: starting in 3s — press Stop to cancel');
+  log(`autopilot: building "${request.replace(/\n/g, ' ').slice(0, 80)}" — Stop within 3s to cancel`, 'ok');
+  for (let i = 0; i < AUTOPILOT_GRACE_MS / 250 && !abort; i++) await sleep(250);
+  if (abort) {
+    log('autopilot: cancelled before it started', 'err');
+    status('idle');
+    await endingRun();
+    return;
+  }
+
+  resetRun(protocol.slug(request), request, (currentMode() || {}).key);
+  let preview = null;
   try {
-    els.prompt.value = request;
-    // A fresh autopilot request gets its own folder; reusing the previous slug
-    // would pollute the new project with the old one's files.
-    els.project.value = protocol.slug(request);
-    const { project, written } = await runProject(request);
+    const res = await runProject(request);
+    preview = res.preview;
 
     // Tell the user, in the chat they used, that the job is finished. Do NOT
     // invite a reply - a one-word answer here once relaunched the whole build.
+    // The claim has to match the run: "the build is complete" over a failed
+    // verification is exactly the lie this whole pass exists to remove.
     const summary =
-      `The build is complete. ${written.length} file(s) written to ` +
-      `workspace/${project}/: ${written.join(', ')}. ` +
+      `The build is complete. ${res.written.length} file(s) written to ` +
+      `workspace/${res.project}/: ${res.written.join(', ') || '(none)'}. ` +
+      `Verification: ${verifiedShort(preview)}. ` +
       `No reply needed - type a new request whenever you want the next build.`;
     await ask(els.a, summary).catch(() => {});
-    log(`autopilot: reported completion in chat — ${written.length} file(s)`, 'ok');
-    status('done');
+    log(`autopilot: reported completion in chat — ${res.written.length} file(s)`, 'ok');
+    if (!res.written.length) finishRun(preview, 'failed');
+    else if (preview && (preview.ok || preview.skipped)) finishRun(preview, 'done');
+    else finishRun(preview, 'partial');
   } catch (err) {
-    log(`autopilot failed: ${err.message}`, 'err');
-    status('failed');
+    const stopped = abort;
+    log(`autopilot ${stopped ? 'stopped' : 'failed'}: ${err.message}`, 'err');
+    finishRun(preview, stopped ? 'stopped' : 'failed');
+    await stopServers().catch(() => {});
   } finally {
-    running = false;
-    autopilotCooldownUntil = Date.now() + 30000;
-    els.run.disabled = false;
-    els.stop.disabled = true;
-    watchBaseline = await tabTranscript(els.a).catch(() => null);
+    await endingRun();
   }
 }
 

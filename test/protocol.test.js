@@ -99,7 +99,10 @@ test('extractBody (c): prose around the fence is dropped', () => {
   assert.equal(p.extractBody(withSidecar, 'package.json'), '{\n  "name": "x"\n}\n');
 
   // A stream cut off before the closing fence still yields what arrived.
-  assert.equal(p.extractBody('```js\nconst x = 1;\nconst y =', 'a.js'), 'const x = 1;\nconst y =\n');
+  assert.equal(
+    p.extractBody('```js\nconst x = 1;\nconst y =', 'a.js'),
+    'const x = 1;\nconst y =\n'
+  );
 
   // A fence carrying metadata is still a fence, not a line of the file.
   assert.equal(
@@ -114,7 +117,10 @@ test('extractBody (d): no fences at all - salvage the code out of the prose', ()
     '<!DOCTYPE html>\n<html>\n<body>hi</body>\n</html>\n' +
     'This creates a page with a body.\n' +
     'Let me know if you want styling.';
-  assert.equal(p.extractBody(reply, 'index.html'), '<!DOCTYPE html>\n<html>\n<body>hi</body>\n</html>\n');
+  assert.equal(
+    p.extractBody(reply, 'index.html'),
+    '<!DOCTYPE html>\n<html>\n<body>hi</body>\n</html>\n'
+  );
 
   assert.equal(
     p.extractBody('Here you go:\nimport os\n\ndef main():\n    print("hi")', 'main.py'),
@@ -125,7 +131,10 @@ test('extractBody (d): no fences at all - salvage the code out of the prose', ()
     '{\n  "name": "x"\n}\n'
   );
   assert.equal(
-    p.extractBody('Here it is.\nbody { margin: 0; }\n.card { padding: 8px; }\nThis creates a card.', 'style.css'),
+    p.extractBody(
+      'Here it is.\nbody { margin: 0; }\n.card { padding: 8px; }\nThis creates a card.',
+      'style.css'
+    ),
     'body { margin: 0; }\n.card { padding: 8px; }\n'
   );
   // A module docstring and a bare assignment are file content, not commentary.
@@ -133,7 +142,10 @@ test('extractBody (d): no fences at all - salvage the code out of the prose', ()
     p.extractBody('Sure:\n"""Game of life."""\nimport sys\nprint(1)', 'main.py'),
     '"""Game of life."""\nimport sys\nprint(1)\n'
   );
-  assert.equal(p.extractBody('Sure:\nPORT = 8080\nprint(PORT)', 'conf.py'), 'PORT = 8080\nprint(PORT)\n');
+  assert.equal(
+    p.extractBody('Sure:\nPORT = 8080\nprint(PORT)', 'conf.py'),
+    'PORT = 8080\nprint(PORT)\n'
+  );
 });
 
 test('extractBody never returns prose, so the caller can retry', () => {
@@ -378,8 +390,12 @@ test('workspace confines every path, including hostile ones', () => {
     '....//....//x',
   ];
   for (const bad of escapes) {
-    let full = null;
-    try { full = w.resolveSafe(bad); } catch { continue; } // rejected outright: fine
+    let full;
+    try {
+      full = w.resolveSafe(bad);
+    } catch {
+      continue;
+    } // rejected outright: fine
     assert.ok(
       full === w.ROOT || full.startsWith(w.ROOT + path.sep),
       `escaped workspace: ${bad} -> ${full}`
@@ -403,18 +419,28 @@ test('the bridge exposes every contract protocol name the renderer needs', async
   // protocol.js without exposing it there fails only at runtime, mid-run.
   // Read both sides of the seam at runtime so this guards the integrated tree.
   const bridge = await fsp.readFile(
-    path.join(__dirname, '..', 'src', 'main', 'preload-control.js'), 'utf8'
+    path.join(__dirname, '..', 'src', 'main', 'preload-control.js'),
+    'utf8'
   );
   const renderer = await fsp.readFile(
-    path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8'
+    path.join(__dirname, '..', 'src', 'renderer', 'app.js'),
+    'utf8'
   );
 
   // The shared contract: protocol.js must export each name and
-  // preload-control.js must forward it onto window.notioned.protocol.
+  // preload-control.js must forward it onto the bridge's `protocol` namespace.
+  // (test/seam.test.js checks the same seam by loading the bridge for real.)
   const contract = [
-    'MODES', 'systems', 'TAGS',
-    'parsePath', 'parseVerdict', 'parseAudit',
-    'unfence', 'clean', 'slug', 'rejectReason',
+    'MODES',
+    'systems',
+    'TAGS',
+    'parsePath',
+    'parseVerdict',
+    'parseAudit',
+    'unfence',
+    'clean',
+    'slug',
+    'rejectReason',
   ];
   for (const name of contract) {
     assert.ok(name in p, `protocol.js does not export ${name}`);
@@ -454,4 +480,208 @@ test('a full planner/builder exchange parses end to end', () => {
 
   const full = `${p.slug('My Tool')}/${file}`;
   assert.ok(w.resolveSafe(full).startsWith(w.ROOT + path.sep));
+});
+
+/* ================================================================== */
+/* Shapes that have actually come back from a live tab.               */
+/* ================================================================== */
+
+test('extractBody: blank lines inside a body are never dropped', () => {
+  // A file whose blank lines are eaten stops being the file the builder wrote:
+  // Python loses its block structure and markdown loses every paragraph break.
+  const py = 'import sys\n\n\ndef main():\n\n    print("hi")\n\n\nmain()';
+  assert.equal(p.extractBody('```python\n' + py + '\n```', 'main.py'), py + '\n');
+
+  const md = '# Title\n\nA paragraph.\n\n- one\n- two\n';
+  assert.ok(p.extractBody('```md\n' + md + '```', 'README.md').includes('\n\n- one'));
+});
+
+test('extractBody: leading blank lines go, trailing whitespace is normalised', () => {
+  assert.equal(p.extractBody('```\n\n\nconst x = 1;\n\n\n```', 'a.js'), 'const x = 1;\n');
+  // Exactly one trailing newline, whatever arrived.
+  for (const tail of ['', '\n', '\n\n\n', '   \n  \n']) {
+    assert.equal(p.extractBody('```\nconst x = 1;\n' + tail + '```', 'a.js'), 'const x = 1;\n');
+  }
+});
+
+test('extractBody: three blocks in a row are still one file, in order', () => {
+  const reply =
+    'Here it is:\n' +
+    '```css\n.a { color: red }\n```\n' +
+    'and then\n' +
+    '```css\n.b { color: blue }\n```\n' +
+    'finally\n' +
+    '```css\n.c { color: green }\n```';
+  assert.equal(
+    p.extractBody(reply, 'style.css'),
+    '.a { color: red }\n.b { color: blue }\n.c { color: green }\n'
+  );
+});
+
+test('extractBody: several sidecar blocks are dropped, the real one survives', () => {
+  const reply =
+    'Install:\n```bash\nnpm i\n```\n' +
+    'Then run:\n```console\nnpm start\n```\n' +
+    'The file:\n```js\nmodule.exports = 1;\n```\n' +
+    'Output:\n```text\n1\n```';
+  assert.equal(p.extractBody(reply, 'index.js'), 'module.exports = 1;\n');
+});
+
+test('extractBody: a lone sidecar block IS the file when nothing else is', () => {
+  // A shell script legitimately arrives in a ```bash block; dropping every
+  // sidecar unconditionally would write an empty file for run.sh.
+  assert.equal(
+    p.extractBody('```bash\n#!/usr/bin/env bash\necho hi\n```', 'run.sh'),
+    '#!/usr/bin/env bash\necho hi\n'
+  );
+});
+
+test('extractBody: an unclosed fence still yields what arrived', () => {
+  const cut = p.extractBody('Here:\n```html\n<!DOCTYPE html>\n<html>\n<body>', 'index.html');
+  assert.equal(cut, '<!DOCTYPE html>\n<html>\n<body>\n');
+  // And the caller is told it is unusable rather than writing half a page.
+  assert.ok(p.rejectReason(cut), 'a truncated html body must be rejected');
+});
+
+test('extractBody: the file body never carries a fence marker out', () => {
+  const messy =
+    'Part one:\n```html\n<style>\n.a { color: red }\n```\n' + '```html\n</style>\n<h1>hi</h1>\n```';
+  const out = p.extractBody(messy, 'index.html');
+  assert.ok(!out.includes('```'), 'a stray fence inside <style> silently kills the CSS after it');
+  assert.ok(out.includes('.a { color: red }') && out.includes('<h1>hi</h1>'));
+});
+
+test('stripStrayFences leaves markdown alone and cleans everything else', () => {
+  const body = '# Title\n```js\nconst x = 1;\n```\ntail\n';
+  for (const md of ['README.md', 'docs/GUIDE.markdown', 'page.mdx', 'UPPER.MD']) {
+    assert.equal(p.stripStrayFences(body, md), body, `${md} must keep its fences`);
+  }
+  assert.equal(p.stripStrayFences(body, 'a.js'), '# Title\nconst x = 1;\ntail\n');
+  // No path at all is treated as "not markdown" - the safe default.
+  assert.ok(!p.stripStrayFences(body).includes('```'));
+});
+
+/* --------------------------------------------------------------- condense */
+
+test('condense boundaries: one under, exactly at, and one over the limit', () => {
+  assert.equal(p.condense('x'.repeat(99), 100).length, 99);
+  assert.equal(p.condense('x'.repeat(100), 100).length, 100);
+  const over = p.condense('x'.repeat(101), 100);
+  assert.ok(over.includes('characters elided'));
+
+  // A zero or nonsense budget yields nothing rather than the whole file: the
+  // reviewer getting an empty CONTENT is recoverable, a wedged tab is not.
+  assert.equal(p.condense('x'.repeat(5000), 0), '');
+  assert.equal(p.condense('x'.repeat(5000), -1), '');
+});
+
+test('condense splits head and tail at the documented 5:3 ratio', () => {
+  const body = 'A'.repeat(10000) + 'B'.repeat(10000);
+  const out = p.condense(body, 800);
+  const head = out.slice(0, out.indexOf('\n\n...'));
+  const tail = out.slice(out.lastIndexOf('...\n\n') + 5);
+  assert.equal(head.length, 500);
+  assert.equal(tail.length, 300);
+  assert.ok(/^A+$/.test(head) && /^B+$/.test(tail));
+  assert.equal(Number(out.match(/\.\.\. (\d+) characters elided/)[1]), 20000 - 800);
+});
+
+test('condense keeps the reviewer prompt bounded for every mode', () => {
+  // The 51KB paste that wedged a tab was an index.html; the same file arrives
+  // for every mode, so the bound cannot depend on the mode.
+  const huge = 'z'.repeat(120000);
+  for (const file of ['index.html', 'app/page.tsx', 'main.py', 'src/App.jsx']) {
+    const prompt = p.TAGS.review(file, huge);
+    assert.ok(prompt.length < 5000, `${file}: review prompt was ${prompt.length} chars`);
+    assert.ok(prompt.includes(file));
+  }
+});
+
+/* --------------------------------------------------------------- inferMode */
+
+test('inferMode: the stack signal wins wherever it appears in the sentence', () => {
+  assert.equal(p.inferMode('I would like a NEXT.JS dashboard please'), 'nextjs');
+  assert.equal(p.inferMode('something with next-js and tailwind'), 'nextjs');
+  assert.equal(p.inferMode('use the App Router for this'), 'nextjs');
+  assert.equal(p.inferMode('a react spa for tracking habits'), 'vite');
+  assert.equal(p.inferMode('build it with Django'), 'python');
+  assert.equal(p.inferMode('a pygame platformer'), 'python');
+  assert.equal(p.inferMode('a terminal tool for tagging photos'), 'node');
+  assert.equal(p.inferMode('a command-line converter'), 'node');
+  assert.equal(p.inferMode('one file, no build step'), 'static');
+});
+
+test('inferMode: earlier signals beat later ones, and nothing beats no signal', () => {
+  // Both a Next.js and a Python word: the first rule in the list wins, so the
+  // outcome is deterministic rather than dependent on word order.
+  assert.equal(p.inferMode('a next js app with a python helper script'), 'nextjs');
+  assert.equal(p.inferMode('a python api and a react app'), 'vite');
+  // "react frontend" is not one of the phrases vite claims, so the python
+  // signal is the only explicit one left and it wins.
+  assert.equal(p.inferMode('a python api and a react frontend'), 'python');
+
+  // The tie-break that used to guess "static" from visual words is gone: a
+  // regex quietly deciding the project is one HTML page is how "build me a
+  // search engine" became a single index.html.
+  for (const visual of [
+    'a hill climb racing game',
+    'an interactive dashboard with charts',
+    'a drawing app with a canvas',
+    'a 3d spinning cube',
+    'a photo gallery with a carousel',
+  ]) {
+    assert.equal(p.inferMode(visual), 'auto', `"${visual}" must stay in auto`);
+  }
+});
+
+test('inferMode never returns anything that is not a mode', () => {
+  for (const junk of [null, undefined, '', 0, 42, {}, [], '```', 'DONE']) {
+    const key = p.inferMode(junk);
+    assert.ok(p.MODES[key], `inferMode(${JSON.stringify(junk)}) returned ${key}`);
+  }
+});
+
+/* -------------------------------------------------------------- workspace */
+
+test('workspace refuses the traversal shapes a chat reply actually produces', () => {
+  const hostile = [
+    '..',
+    '../',
+    '../../../../../../Windows/System32/drivers/etc/hosts',
+    '..\\..\\secret.txt',
+    'proj/../../outside.js',
+    'proj/sub/../../../outside.js',
+    './../outside.js',
+    '%2e%2e/outside.js', // not decoded by us, so it is just a folder name
+  ];
+  for (const rel of hostile) {
+    let full;
+    try {
+      full = w.resolveSafe(rel);
+    } catch {
+      continue;
+    } // refused: fine
+    assert.ok(
+      full === w.ROOT || full.startsWith(w.ROOT + path.sep),
+      `escaped the workspace: ${rel} -> ${full}`
+    );
+  }
+});
+
+test('workspace normalises the separators and prefixes a reply may carry', () => {
+  const inside = w.resolveSafe('proj/src/index.ts');
+  assert.equal(w.resolveSafe('proj\\src\\index.ts'), inside, 'windows separators');
+  assert.equal(w.resolveSafe('/proj/src/index.ts'), inside, 'a leading slash');
+  assert.equal(w.resolveSafe('  proj/src/index.ts  '), inside, 'surrounding whitespace');
+  assert.equal(w.resolveSafe('proj/./src/index.ts'), inside, 'a dot segment');
+});
+
+test('workspace rejects an empty or unusable path outright', () => {
+  // A lone separator or drive prefix reduces to nothing once stripped.
+  for (const bad of ['', '   ', null, undefined, '/', '\\', 'C:']) {
+    assert.throws(() => w.resolveSafe(bad), JSON.stringify(bad) + ' must be refused');
+  }
+  // A NUL byte would truncate the path inside libuv. Built rather than
+  // written literally: an invisible NUL in a source file is unreadable.
+  assert.throws(() => w.resolveSafe('proj/a' + String.fromCharCode(0) + 'b.txt'));
 });

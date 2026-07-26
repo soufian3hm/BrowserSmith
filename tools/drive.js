@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Remote-control the running notioned window over Chrome DevTools Protocol.
+ * Remote-control the running BrowserSmith window over Chrome DevTools Protocol.
  * Start the app with --remote-debugging-port=9222, then:
  *
  *   node tools/drive.js targets
@@ -19,7 +19,7 @@ async function targets() {
   return res.json();
 }
 
-/** The control window (index.html), not the two Notion webviews. */
+/** The control window (index.html), not one of the four chat webviews. */
 async function controlTarget() {
   const list = await targets();
   // Must be the control window, not a project preview that happens to be an
@@ -68,9 +68,7 @@ async function evaluate(expression, { awaitPromise = true } = {}) {
       userGesture: true,
     });
     if (r.exceptionDetails) {
-      throw new Error(
-        r.exceptionDetails.exception?.description || r.exceptionDetails.text
-      );
+      throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     }
     return r.result.value;
   } finally {
@@ -125,8 +123,10 @@ const CMDS = {
 };
 
 const [cmd, ...args] = process.argv.slice(2);
-if (!CMDS[cmd]) {
-  console.error('usage: drive.js <targets|eval|click|log> [arg]');
+if (!Object.prototype.hasOwnProperty.call(CMDS, cmd)) {
+  // Generated, not typed out: a hand-written list silently went stale the day
+  // `tab` was added, hiding the one command that drives a webview preload.
+  console.error(`usage: drive.js <${Object.keys(CMDS).join('|')}> [arg]`);
   process.exit(1);
 }
 CMDS[cmd](...args)

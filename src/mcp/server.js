@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * MCP stdio server over the buildgpt workspace. Lets an external agent (Claude
+ * MCP stdio server over the BrowserSmith workspace. Lets an external agent (Claude
  * Code, etc.) read and write the same directory the agent loop writes into -
  * this is the "handshake" side of the system.
  */
@@ -10,11 +10,11 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { z } = require('zod');
 const workspace = require('../main/workspace');
 
-const server = new McpServer({ name: 'buildgpt', version: '0.1.0' });
+const server = new McpServer({ name: 'browsersmith', version: '1.0.0' });
 
 server.tool(
   'workspace_list',
-  'List every file the buildgpt agent loop has produced.',
+  'List every file the BrowserSmith agent loop has produced.',
   {},
   async () => {
     const files = await workspace.list();
@@ -24,7 +24,7 @@ server.tool(
 
 server.tool(
   'workspace_read',
-  'Read one file from the buildgpt workspace.',
+  'Read one file from the BrowserSmith workspace.',
   { path: z.string().describe('Path relative to workspace/') },
   async ({ path }) => ({
     content: [{ type: 'text', text: await workspace.readFile(path) }],
@@ -33,7 +33,7 @@ server.tool(
 
 server.tool(
   'workspace_write',
-  'Write a file into the buildgpt workspace.',
+  'Write a file into the BrowserSmith workspace.',
   {
     path: z.string().describe('Path relative to workspace/'),
     content: z.string(),

@@ -1,186 +1,1606 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-density="comfortable">
   <head>
     <meta charset="utf-8" />
-    <title>buildgpt</title>
+    <meta name="color-scheme" content="dark light" />
+    <title>BrowserSmith</title>
     <link rel="stylesheet" href="style.css" />
+    <script>
+      /* Theme is applied before first paint so a light-theme user never sees a
+         dark flash on launch. Everything else waits for the enhancer at the
+         bottom of the body. */
+      try {
+        var p = JSON.parse(localStorage.getItem('browsersmith.ui') || '{}');
+        if (p.theme) document.documentElement.dataset.theme = p.theme;
+        if (p.density) document.documentElement.dataset.density = p.density;
+        if (p.motion) document.documentElement.dataset.motion = p.motion;
+      } catch (e) { /* first launch, or storage blocked - defaults stand */ }
+    </script>
   </head>
   <body>
+    <a class="skiplink" href="#prompt">Skip to the request box</a>
+
+    <!-- ============================================================ header -->
     <header class="appbar">
-      <span class="brand">buildgpt</span>
-      <button id="btn-autopilot" aria-pressed="false"
-        title="Type once in the planner's ChatGPT tab; the system finishes on its own">Autopilot</button>
+      <div class="lockup">
+        <!-- Mirrors assets/icon.svg so the lockup renders with zero file or
+             network dependency, in dev and inside a packaged asar alike. -->
+        <svg class="logomark" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="bs-plate" x1="0.12" y1="0" x2="0.85" y2="1">
+              <stop offset="0" stop-color="#0FA98C" />
+              <stop offset="0.42" stop-color="#0B8A85" />
+              <stop offset="1" stop-color="#0E3350" />
+            </linearGradient>
+            <linearGradient id="bs-mark" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#FFFFFF" />
+              <stop offset="1" stop-color="#E9EFF3" />
+            </linearGradient>
+          </defs>
+          <rect width="512" height="512" rx="116" fill="url(#bs-plate)" />
+          <g fill="url(#bs-mark)">
+            <path fill-rule="evenodd" d="M132 100 h248 a40 40 0 0 1 40 40 v232 a40 40 0 0 1 -40 40 h-248 a40 40 0 0 1 -40 -40 v-232 a40 40 0 0 1 40 -40 z M124 176 v196 a16 16 0 0 0 16 16 h232 a16 16 0 0 0 16 -16 v-196 z" />
+            <circle cx="156" cy="138" r="12" />
+            <circle cx="194" cy="138" r="12" />
+            <circle cx="232" cy="138" r="12" />
+            <path d="M150 322 h212 a10 10 0 0 1 10 10 v18 a10 10 0 0 1 -10 10 h-24 c5 14 15 24 26 29 a7 7 0 0 1 -3 13 h-100 a7 7 0 0 1 -3 -13 c11 -5 21 -15 26 -29 h-24 a10 10 0 0 1 -10 -10 v-18 a10 10 0 0 1 10 -10 z" />
+            <g transform="rotate(40 330 214)">
+              <path d="M286 186 h60 a15 15 0 0 1 15 15 v28 a15 15 0 0 1 -15 15 h-60 c-9 0 -14 -7 -17 -15 -3 -10 -3 -16 0 -26 3 -8 8 -17 17 -17 z" />
+              <rect x="346" y="201" width="92" height="22" rx="11" />
+            </g>
+            <path d="M246 236 l10 30 24 -17 -15 26 30 6 -30 6 15 26 -24 -17 -10 30 -10 -30 -24 17 15 -26 -30 -6 30 -6 -15 -26 24 17 z" />
+          </g>
+        </svg>
+        <span class="wordmark">
+          <span class="brand">BrowserSmith</span>
+          <span class="tagline">four agents, one real project</span>
+        </span>
+      </div>
 
       <div class="appbar-right">
-        <span id="status" aria-live="polite">idle</span>
+        <button id="btn-autopilot" aria-pressed="false"
+          title="Autopilot: type your request straight into the planner's chat tab. BrowserSmith notices it and finishes the whole build on its own.">Autopilot</button>
+
         <span id="session" class="pill out">checking session&hellip;</span>
 
-        <details id="adv">
-          <summary>Advanced</summary>
-          <div class="menu-panel">
-            <div class="menu-group">
-              <span class="menu-label">Maintenance</span>
-              <div class="menu-row">
-                <button id="btn-selftest" title="Run the built-in diagnostics">Self-test</button>
-                <button id="btn-forget" title="Wipe the saved ChatGPT session">Forget login</button>
-              </div>
-            </div>
-            <div class="menu-group">
-              <span class="menu-label">Element pickers</span>
-              <p class="menu-note">
-                Rescue hatch for when ChatGPT&rsquo;s UI changes. Click a picker, then click the
-                matching element inside that tab to re-teach it.
-              </p>
-              <div class="pick-group">
-                <span class="pick-tab">Tab A &middot; Planner</span>
-                <div class="pick-row">
-                  <button data-pick="a-composer" title="Pick the composer in tab A">Composer</button>
-                  <button data-pick="a-send" title="Pick the send button in tab A">Send</button>
-                  <button data-pick="a-model" title="Pick the model menu in tab A">Model</button>
-                  <button data-pick="a-output" title="Pick the output area in tab A">Output</button>
-                </div>
-              </div>
-              <div class="pick-group">
-                <span class="pick-tab">Tab B &middot; Builder</span>
-                <div class="pick-row">
-                  <button data-pick="b-composer" title="Pick the composer in tab B">Composer</button>
-                  <button data-pick="b-send" title="Pick the send button in tab B">Send</button>
-                  <button data-pick="b-model" title="Pick the model menu in tab B">Model</button>
-                  <button data-pick="b-output" title="Pick the output area in tab B">Output</button>
-                </div>
-              </div>
-              <div class="pick-group">
-                <span class="pick-tab">Tab C &middot; Reviewer</span>
-                <div class="pick-row">
-                  <button data-pick="c-composer" title="Pick the composer in tab C">Composer</button>
-                  <button data-pick="c-send" title="Pick the send button in tab C">Send</button>
-                  <button data-pick="c-model" title="Pick the model menu in tab C">Model</button>
-                  <button data-pick="c-output" title="Pick the output area in tab C">Output</button>
-                </div>
-              </div>
-              <div class="pick-group">
-                <span class="pick-tab">Tab D &middot; Auditor</span>
-                <div class="pick-row">
-                  <button data-pick="d-composer" title="Pick the composer in tab D">Composer</button>
-                  <button data-pick="d-send" title="Pick the send button in tab D">Send</button>
-                  <button data-pick="d-model" title="Pick the model menu in tab D">Model</button>
-                  <button data-pick="d-output" title="Pick the output area in tab D">Output</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </details>
+        <span class="icon-group">
+          <button id="btn-theme" class="icon" aria-label="Switch theme"
+            title="Switch between the dark and light theme (Ctrl+Shift+D)">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="i-sun">
+              <circle cx="8" cy="8" r="3.1" />
+              <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.2 3.2l1.4 1.4M11.4 11.4l1.4 1.4M12.8 3.2l-1.4 1.4M4.6 11.4l-1.4 1.4" />
+            </svg>
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="i-moon">
+              <path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z" />
+            </svg>
+          </button>
+          <button id="btn-shortcuts" class="icon" aria-label="Keyboard shortcuts"
+            title="Keyboard shortcuts (press ?)">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <rect x="1.2" y="3.6" width="13.6" height="9" rx="2" />
+              <path d="M4 6.4h.01M6.4 6.4h.01M8.8 6.4h.01M11.2 6.4h.01M4.8 9.6h6.4" />
+            </svg>
+          </button>
+          <button id="btn-settings" class="icon" aria-label="Settings"
+            title="Settings, diagnostics and element pickers (Ctrl+,)">
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <circle cx="8" cy="8" r="2.4" />
+              <path d="M8 1.4l1 1.7a5.6 5.6 0 0 1 1.6.7l1.9-.4.9 1.6-1.3 1.4c.1.5.1 1 0 1.6l1.3 1.4-.9 1.6-1.9-.4a5.6 5.6 0 0 1-1.6.7l-1 1.7H7l-1-1.7a5.6 5.6 0 0 1-1.6-.7l-1.9.4-.9-1.6 1.3-1.4a5.6 5.6 0 0 1 0-1.6L1.6 5l.9-1.6 1.9.4a5.6 5.6 0 0 1 1.6-.7l1-1.7z" />
+            </svg>
+          </button>
+        </span>
       </div>
     </header>
 
+    <!-- =========================================================== run bar -->
+    <div class="runbar">
+      <ol class="pipeline" id="pipeline" aria-label="Build pipeline">
+        <li class="step" data-step="plan" data-tab-ref="a" data-state="idle">
+          <span class="step-key" aria-hidden="true">A</span>
+          <span class="step-text">
+            <span class="step-name">Plan</span>
+            <span class="step-state">idle</span>
+          </span>
+        </li>
+        <li class="step" data-step="build" data-tab-ref="b" data-state="idle">
+          <span class="step-key" aria-hidden="true">B</span>
+          <span class="step-text">
+            <span class="step-name">Build</span>
+            <span class="step-state">idle</span>
+          </span>
+        </li>
+        <li class="step" data-step="review" data-tab-ref="c" data-state="idle">
+          <span class="step-key" aria-hidden="true">C</span>
+          <span class="step-text">
+            <span class="step-name">Review</span>
+            <span class="step-state">idle</span>
+          </span>
+        </li>
+        <li class="step" data-step="audit" data-tab-ref="d" data-state="idle">
+          <span class="step-key" aria-hidden="true">D</span>
+          <span class="step-text">
+            <span class="step-name">Audit</span>
+            <span class="step-state">idle</span>
+          </span>
+        </li>
+      </ol>
+
+      <div class="runbar-right">
+        <span class="meter" id="run-files" title="Files written in this run">
+          <span class="meter-num">0</span><span class="meter-unit">files</span>
+        </span>
+        <span class="meter" id="run-clock" title="Elapsed time for this run">
+          <span class="meter-num">00:00</span>
+        </span>
+        <span id="status" role="status" aria-live="polite">idle</span>
+      </div>
+
+      <div class="progress" id="progress" aria-hidden="true"><span></span></div>
+    </div>
+
+    <!-- ============================================================== main -->
     <main>
       <section class="work">
         <div class="viewbar">
           <div class="seg" role="group" aria-label="Work area view">
-            <button id="btn-view-agents">Agents</button>
-            <button id="btn-view-preview">Preview</button>
+            <button id="btn-view-agents" aria-pressed="true"
+              title="The four chat tabs (Ctrl+P switches)">Agents</button>
+            <button id="btn-view-preview" aria-pressed="false"
+              title="The project you just built, running (Ctrl+P switches)">Preview</button>
+          </div>
+          <div class="viewbar-right">
+            <button id="btn-toggle-dock" class="ghost" aria-expanded="true" aria-controls="dock"
+              title="Show or hide the terminal and files dock (Ctrl+J)">Dock</button>
           </div>
         </div>
 
         <div id="views" data-view="agents">
-          <section class="view view-agents" aria-label="Agent tabs">
+          <section class="view view-agents" id="tabs" aria-label="Agent tabs">
             <div class="tab" data-tab="a">
               <div class="tab-head">
-                <span class="role">A &middot; Planner &middot; ChatGPT</span>
-                <select id="model-a" aria-label="Model for tab A"><option value="">model&hellip;</option></select>
-                <button class="mini" data-models="a" aria-label="Reload models for tab A" title="Reload models">&#10227;</button>
+                <span class="role"><span class="role-key">A</span>Planner</span>
+                <span class="tab-state" data-state="idle">idle</span>
+                <select id="model-a" aria-label="Model for tab A, the planner"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="a" aria-label="Reload models for tab A" title="Reload the model list for this tab">&#10227;</button>
               </div>
-              <webview id="tab-a" src="https://chatgpt.com/?temporary-chat=true" allowpopups></webview>
+              <webview id="tab-a" src="https://chatgpt.com/?temporary-chat=true" allowpopups
+                title="Planner chat"></webview>
             </div>
             <div class="tab" data-tab="b">
               <div class="tab-head">
-                <span class="role">B &middot; Builder &middot; ChatGPT</span>
-                <select id="model-b" aria-label="Model for tab B"><option value="">model&hellip;</option></select>
-                <button class="mini" data-models="b" aria-label="Reload models for tab B" title="Reload models">&#10227;</button>
+                <span class="role"><span class="role-key">B</span>Builder</span>
+                <span class="tab-state" data-state="idle">idle</span>
+                <select id="model-b" aria-label="Model for tab B, the builder"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="b" aria-label="Reload models for tab B" title="Reload the model list for this tab">&#10227;</button>
               </div>
-              <webview id="tab-b" src="https://chatgpt.com/?temporary-chat=true" allowpopups></webview>
+              <webview id="tab-b" src="https://chatgpt.com/?temporary-chat=true" allowpopups
+                title="Builder chat"></webview>
             </div>
             <div class="tab" data-tab="c">
               <div class="tab-head">
-                <span class="role">C &middot; Reviewer &middot; ChatGPT</span>
-                <select id="model-c" aria-label="Model for tab C"><option value="">model&hellip;</option></select>
-                <button class="mini" data-models="c" aria-label="Reload models for tab C" title="Reload models">&#10227;</button>
+                <span class="role"><span class="role-key">C</span>Reviewer</span>
+                <span class="tab-state" data-state="idle">idle</span>
+                <select id="model-c" aria-label="Model for tab C, the reviewer"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="c" aria-label="Reload models for tab C" title="Reload the model list for this tab">&#10227;</button>
               </div>
-              <webview id="tab-c" src="https://chatgpt.com/?temporary-chat=true" allowpopups></webview>
+              <webview id="tab-c" src="https://chatgpt.com/?temporary-chat=true" allowpopups
+                title="Reviewer chat"></webview>
             </div>
             <div class="tab" data-tab="d">
               <div class="tab-head">
-                <span class="role">D &middot; Auditor &middot; ChatGPT</span>
-                <select id="model-d" aria-label="Model for tab D"><option value="">model&hellip;</option></select>
-                <button class="mini" data-models="d" aria-label="Reload models for tab D" title="Reload models">&#10227;</button>
+                <span class="role"><span class="role-key">D</span>Auditor</span>
+                <span class="tab-state" data-state="idle">idle</span>
+                <select id="model-d" aria-label="Model for tab D, the auditor"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="d" aria-label="Reload models for tab D" title="Reload the model list for this tab">&#10227;</button>
               </div>
-              <webview id="tab-d" src="https://chatgpt.com/?temporary-chat=true" allowpopups></webview>
+              <webview id="tab-d" src="https://chatgpt.com/?temporary-chat=true" allowpopups
+                title="Auditor chat"></webview>
             </div>
           </section>
 
-          <section class="view view-preview" aria-label="Live preview">
+          <section class="view view-preview" data-empty="true" aria-label="Live preview">
             <div class="preview-bar">
-              <span id="preview-url">about:blank</span>
-              <button id="btn-open-external" title="Open the preview in your default browser">Open in browser</button>
+              <span class="url-chip"><span id="preview-url">about:blank</span></span>
+              <button id="btn-open-external" disabled
+                title="Open the running project in your default browser">Open in browser</button>
             </div>
-            <webview id="tab-preview" src="about:blank"></webview>
+            <div class="empty empty-preview">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="2.5" y="4" width="19" height="16" rx="3" />
+                <path d="M2.5 9h19M6 6.5h.01M8.5 6.5h.01" />
+              </svg>
+              <p class="empty-title">Nothing running yet</p>
+              <p class="empty-body">
+                Describe what to build and press Run. When the project starts, it appears here &mdash;
+                and the auditor looks at this exact page before it calls the run done.
+              </p>
+            </div>
+            <webview id="tab-preview" src="about:blank" title="Live preview of the generated project"></webview>
+          </section>
+        </div>
+
+        <div class="hsplit" id="split-dock" role="separator" aria-orientation="horizontal"
+          tabindex="0" aria-label="Resize the terminal and files dock"></div>
+
+        <div class="dock" id="dock">
+          <section class="panel term">
+            <div class="panel-head">
+              <span class="panel-title">Terminal</span>
+              <span class="panel-sub" id="term-cwd">workspace/</span>
+              <span class="panel-actions">
+                <button class="mini" id="btn-clear-term" title="Clear the terminal output">Clear</button>
+              </span>
+            </div>
+            <div class="panel-body">
+              <div id="terminal" role="log" aria-live="off" aria-label="Terminal output" tabindex="0"></div>
+              <div class="empty empty-term">
+                <p class="empty-title">No output yet</p>
+                <p class="empty-body">
+                  Installs, dev servers and anything you type below print here.
+                </p>
+              </div>
+            </div>
+            <div class="term-row">
+              <span class="term-prompt" aria-hidden="true">&rsaquo;</span>
+              <input id="term-input" aria-label="Terminal command" spellcheck="false" autocomplete="off"
+                placeholder="npm run build &mdash; runs inside the project folder" />
+              <span class="term-hint" aria-hidden="true">&uarr;&darr; history</span>
+            </div>
+          </section>
+
+          <div class="vsplit" id="split-dock-cols" role="separator" aria-orientation="vertical"
+            tabindex="0" aria-label="Resize the files panel"></div>
+
+          <section class="panel workspace">
+            <div class="panel-head">
+              <span class="panel-title" id="files-title">workspace/</span>
+              <span class="count" id="files-count">0</span>
+              <span class="panel-actions">
+                <button class="mini" id="btn-files-collapse" title="Collapse every folder">Collapse</button>
+              </span>
+            </div>
+            <div class="panel-body">
+              <!-- #files stays the machine-readable list the orchestrator writes
+                   into; the tree beside it is a rendering of exactly those rows,
+                   so a click still reaches the original <li>. -->
+              <ul id="files" class="sr-data" aria-hidden="true"></ul>
+              <div id="file-tree" class="tree" aria-label="Generated files"></div>
+              <div class="empty empty-files">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2.5h7A1.5 1.5 0 0 1 19 9v8.5A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5z" />
+                </svg>
+                <p class="empty-title">No files yet</p>
+                <p class="empty-body">Every file the agents write lands here as it is approved.</p>
+              </div>
+            </div>
           </section>
         </div>
       </section>
 
-      <aside class="sidebar">
-        <div class="field-row">
-          <div class="field">
-            <label for="mode">Mode</label>
-            <select id="mode">
-              <option value="auto">Auto-detect</option>
-              <option value="nextjs" selected>Next.js</option>
-              <option value="vite">Vite + React</option>
-              <option value="static">Static HTML</option>
-              <option value="node">Node CLI</option>
-              <option value="python">Python</option>
-            </select>
+      <div class="vsplit" id="split-sidebar" role="separator" aria-orientation="vertical"
+        tabindex="0" aria-label="Resize the sidebar"></div>
+
+      <!-- ========================================================= sidebar -->
+      <aside class="sidebar" aria-label="Run controls">
+        <section class="card">
+          <div class="field-row">
+            <div class="field">
+              <label for="mode">Mode</label>
+              <select id="mode" title="What kind of project the agents should write">
+                <option value="auto" selected title="No fixed stack. The planner picks whatever genuinely fits the request - any language, any number of files.">Auto</option>
+                <option value="nextjs" title="Next.js App Router in TypeScript. Scaffolds the project and runs npm install first - about a minute before the first file.">Next.js</option>
+                <option value="vite" title="Vite + React. Scaffolds the project and runs npm install first - about a minute before the first file.">Vite</option>
+                <option value="static" title="One index.html plus optional styles.css and script.js. No build step, no install - opens straight from disk.">Static site</option>
+                <option value="node" title="Node.js CommonJS entry point, run as node index.js. Scaffolds a package.json first.">Node.js</option>
+                <option value="python" title="Python 3 entry point, run as python main.py. Scaffolds requirements.txt first.">Python</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="project">Project</label>
+              <input id="project" placeholder="my-cool-tool" spellcheck="false" autocomplete="off"
+                title="Folder name under workspace/. Left empty, it is derived from your request." />
+            </div>
           </div>
+          <p class="mode-hint" id="mode-hint"></p>
+
           <div class="field">
-            <label for="project">Project</label>
-            <input id="project" placeholder="my-cool-tool" spellcheck="false" autocomplete="off" />
+            <label for="prompt">Request</label>
+            <textarea id="prompt" spellcheck="false"
+              placeholder="Describe what to build. The four agents plan it, write it, review every file and audit the result &mdash; then it runs."></textarea>
           </div>
-        </div>
 
-        <div class="field">
-          <label for="prompt">Prompt</label>
-          <textarea id="prompt" spellcheck="false"
-            placeholder="Describe what to build. The four ChatGPT agents plan, write, review and audit it &mdash; then it runs."></textarea>
-        </div>
+          <div class="examples" id="examples" aria-label="Example requests">
+            <span class="examples-label">Try</span>
+            <button class="chip" data-example="a snake game I can play with the arrow keys, with a score and a restart button">a snake game</button>
+            <button class="chip" data-example="a markdown notes app with a live preview pane and local storage">a notes app</button>
+            <button class="chip" data-example="a CLI that renames photos in a folder by their EXIF date">a photo CLI</button>
+          </div>
 
-        <div class="actions">
-          <button id="btn-run" class="primary">Run</button>
-          <button id="btn-stop" disabled>Stop</button>
-        </div>
+          <div class="actions">
+            <button id="btn-run" class="primary" title="Start the build (Ctrl+Enter)">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" class="i-run"><path d="M4 2.8l8.5 5.2L4 13.2z" /></svg>
+              Run
+            </button>
+            <button id="btn-stop" disabled title="Stop after the current reply (Esc)">Stop</button>
+          </div>
 
-        <select id="model-all" aria-label="Set the model for all tabs"><option value="">All models...</option></select>
+          <p class="gate" id="login-gate" hidden>
+            Log in to ChatGPT in tab <strong>A</strong> first &mdash; all four tabs share that one session.
+          </p>
+
+          <div class="field">
+            <label for="model-all">Model &mdash; all four tabs</label>
+            <select id="model-all" title="Pick one model and every tab switches to it"><option value="">All models&hellip;</option></select>
+          </div>
+        </section>
 
         <section class="panel activity">
-          <div class="panel-head">Activity</div>
-          <div id="log" aria-live="polite"></div>
-        </section>
-
-        <section class="panel term">
-          <div class="panel-head">Terminal</div>
-          <div id="terminal"></div>
-          <div class="term-row">
-            <span class="term-prompt" aria-hidden="true">$</span>
-            <input id="term-input" aria-label="Terminal command" spellcheck="false" autocomplete="off" />
+          <div class="panel-head">
+            <span class="panel-title">Activity</span>
+            <span class="count" id="log-count">0</span>
+            <span class="panel-actions">
+              <button class="mini" id="btn-report" title="Copy a markdown run report to the clipboard">Report</button>
+              <button class="mini" id="btn-clear-log" title="Clear the activity feed (Ctrl+L)">Clear</button>
+            </span>
           </div>
-        </section>
 
-        <section class="panel workspace">
-          <div class="panel-head">workspace/</div>
-          <ul id="files"></ul>
+          <div class="filterbar">
+            <label class="search">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <circle cx="7" cy="7" r="4.4" /><path d="M10.3 10.3L14 14" />
+              </svg>
+              <input id="log-search" type="search" placeholder="Filter activity&hellip;"
+                aria-label="Filter the activity feed" spellcheck="false" autocomplete="off" />
+            </label>
+            <div class="chips" id="log-filters" role="group" aria-label="Activity filters">
+              <button class="chip" data-filter="all" aria-pressed="true" title="Everything">All</button>
+              <button class="chip" data-filter="file" aria-pressed="false" title="Files written to disk">Files</button>
+              <button class="chip" data-filter="verdict" aria-pressed="false" title="Reviewer and auditor verdicts">Verdicts</button>
+              <button class="chip" data-filter="problem" aria-pressed="false" title="Failures, rejections and chat rotations">Problems</button>
+              <button class="chip" data-filter="agent" aria-pressed="false" title="Planner decisions and raw model replies">Agents</button>
+            </div>
+          </div>
+
+          <div class="panel-body">
+            <div id="log" role="log" aria-live="off" aria-label="Activity feed" tabindex="0"></div>
+            <div class="empty empty-log">
+              <p class="empty-title">Nothing has happened yet</p>
+              <p class="empty-body">
+                Every plan, file, verdict and failure shows up here, newest last.
+              </p>
+            </div>
+            <div class="empty empty-nomatch" hidden>
+              <p class="empty-title">No matching activity</p>
+              <p class="empty-body">Clear the filter to see everything again.</p>
+            </div>
+            <button class="jump" id="btn-log-jump" hidden>Jump to latest</button>
+          </div>
         </section>
       </aside>
     </main>
 
+    <!-- =========================================================== toasts -->
+    <div class="toasts" id="toasts" role="region" aria-label="Notifications" aria-live="polite"></div>
+
+    <!-- ========================================================= settings -->
+    <dialog id="settings" class="sheet" aria-labelledby="settings-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="settings-title">Settings</h2>
+        <button class="icon" value="close" aria-label="Close settings">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </form>
+
+      <div class="sheet-body">
+        <section class="set-group">
+          <h3>Appearance</h3>
+          <div class="set-row">
+            <label for="set-theme">Theme</label>
+            <select id="set-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </div>
+          <div class="set-row">
+            <label for="set-density">Density</label>
+            <select id="set-density">
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </div>
+          <div class="set-row">
+            <label for="set-motion">Animation</label>
+            <select id="set-motion">
+              <option value="auto">Follow the system</option>
+              <option value="off">Reduce motion</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h3>Activity feed</h3>
+          <label class="set-check"><input type="checkbox" id="set-timestamps" checked /> Show timestamps</label>
+          <label class="set-check"><input type="checkbox" id="set-toasts" checked /> Pop a toast when something fails</label>
+          <div class="set-row">
+            <label for="set-maxlines">Keep at most</label>
+            <select id="set-maxlines">
+              <option value="500">500 lines</option>
+              <option value="2000" selected>2000 lines</option>
+              <option value="10000">10000 lines</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h3>Maintenance</h3>
+          <p class="set-note">
+            Self-test drives every tab through a live check and prints the result in Activity.
+            Forgetting the login wipes the saved session and reloads all four tabs.
+          </p>
+          <div class="menu-row">
+            <button id="btn-selftest" title="Run the built-in diagnostics against all four tabs">Self-test</button>
+            <button id="btn-forget" title="Wipe the saved ChatGPT session">Forget login</button>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h3>Element pickers</h3>
+          <p class="set-note">
+            Rescue hatch for when the chat UI changes under the app. Click a picker, then click the
+            matching element inside that tab to re-teach it.
+          </p>
+          <div class="pick-group">
+            <span class="pick-tab">Tab A &middot; Planner</span>
+            <div class="pick-row">
+              <button data-pick="a-composer" title="Pick the composer in tab A">Composer</button>
+              <button data-pick="a-send" title="Pick the send button in tab A">Send</button>
+              <button data-pick="a-model" title="Pick the model menu in tab A">Model</button>
+              <button data-pick="a-output" title="Pick the output area in tab A">Output</button>
+            </div>
+          </div>
+          <div class="pick-group">
+            <span class="pick-tab">Tab B &middot; Builder</span>
+            <div class="pick-row">
+              <button data-pick="b-composer" title="Pick the composer in tab B">Composer</button>
+              <button data-pick="b-send" title="Pick the send button in tab B">Send</button>
+              <button data-pick="b-model" title="Pick the model menu in tab B">Model</button>
+              <button data-pick="b-output" title="Pick the output area in tab B">Output</button>
+            </div>
+          </div>
+          <div class="pick-group">
+            <span class="pick-tab">Tab C &middot; Reviewer</span>
+            <div class="pick-row">
+              <button data-pick="c-composer" title="Pick the composer in tab C">Composer</button>
+              <button data-pick="c-send" title="Pick the send button in tab C">Send</button>
+              <button data-pick="c-model" title="Pick the model menu in tab C">Model</button>
+              <button data-pick="c-output" title="Pick the output area in tab C">Output</button>
+            </div>
+          </div>
+          <div class="pick-group">
+            <span class="pick-tab">Tab D &middot; Auditor</span>
+            <div class="pick-row">
+              <button data-pick="d-composer" title="Pick the composer in tab D">Composer</button>
+              <button data-pick="d-send" title="Pick the send button in tab D">Send</button>
+              <button data-pick="d-model" title="Pick the model menu in tab D">Model</button>
+              <button data-pick="d-output" title="Pick the output area in tab D">Output</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="set-group">
+          <h3>About</h3>
+          <p class="set-note" id="about-note">
+            BrowserSmith drives four ChatGPT tabs through the browser UI &mdash; no API key, a free
+            account works. Projects are written into <code>workspace/</code> beside the app.
+          </p>
+          <div class="set-row">
+            <span class="set-key">Layout</span>
+            <button class="mini" id="btn-reset-layout" title="Put the panes back to their default sizes">Reset panes</button>
+          </div>
+        </section>
+      </div>
+    </dialog>
+
+    <!-- ======================================================== shortcuts -->
+    <dialog id="shortcuts" class="sheet" aria-labelledby="shortcuts-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <button class="icon" value="close" aria-label="Close shortcuts">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </form>
+      <div class="sheet-body">
+        <dl class="keys">
+          <div><dt><kbd>Ctrl</kbd><kbd>Enter</kbd></dt><dd>Run the request</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Stop the run &middot; close this panel</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>1</kbd>&hellip;<kbd>4</kbd></dt><dd>Focus agent tab A&ndash;D</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>P</kbd></dt><dd>Switch Agents / Preview</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>J</kbd></dt><dd>Show or hide the dock</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>K</kbd></dt><dd>Filter the activity feed</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>L</kbd></dt><dd>Clear the activity feed</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>`</kbd></dt><dd>Focus the terminal</dd></div>
+          <div><dt><kbd>&uarr;</kbd><kbd>&darr;</kbd></dt><dd>Terminal history (in the terminal)</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd></dt><dd>Switch theme</dd></div>
+          <div><dt><kbd>Ctrl</kbd><kbd>,</kbd></dt><dd>Settings</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>This panel</dd></div>
+        </dl>
+      </div>
+    </dialog>
+
+    <!--
+      Shell behaviour: theme, panes, filtering, the pipeline read-out, keyboard
+      map, toasts and the file tree.
+
+      It runs BEFORE app.js so its observers see the very first line the
+      orchestrator logs, and it only ever READS what app.js writes - no shared
+      state, no exported hooks app.js has to call. If this whole block were
+      deleted the orchestrator would still run; every enhancement here degrades
+      to the plain markup underneath it.
+    -->
+    <script>
+      (function () {
+        'use strict';
+
+        var d = document;
+        var root = d.documentElement;
+        var $ = function (s, r) { return (r || d).querySelector(s); };
+        var $$ = function (s, r) { return Array.prototype.slice.call((r || d).querySelectorAll(s)); };
+
+        // One broken enhancement must never take the rest of the shell with it.
+        function safe(name, fn) {
+          try { return fn(); } catch (e) { console.warn('[ui:' + name + ']', e); }
+        }
+
+        /* ------------------------------------------------------ preferences */
+
+        var PREF_KEY = 'browsersmith.ui';
+        var prefs = safe('prefs', function () {
+          return JSON.parse(localStorage.getItem(PREF_KEY) || '{}');
+        }) || {};
+        function pref(k, dflt) { return prefs[k] === undefined ? dflt : prefs[k]; }
+        function setPref(k, v) {
+          prefs[k] = v;
+          safe('prefs.save', function () { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); });
+        }
+
+        /* ----------------------------------------------------------- toasts */
+
+        var toastBox = $('#toasts');
+        var lastToast = { msg: '', at: 0 };
+
+        function toast(msg, kind, ttl) {
+          if (!toastBox || !msg) return;
+          if (kind === 'error' && !pref('toasts', true)) return;
+          var now = Date.now();
+          // The loop can emit the same failure every retry; one card is enough.
+          if (msg === lastToast.msg && now - lastToast.at < 8000) return;
+          lastToast = { msg: msg, at: now };
+
+          var el = d.createElement('div');
+          el.className = 'toast ' + (kind || 'info');
+          var body = d.createElement('span');
+          body.className = 'toast-msg';
+          body.textContent = msg;
+          var x = d.createElement('button');
+          x.type = 'button';
+          x.className = 'toast-x';
+          x.setAttribute('aria-label', 'Dismiss');
+          x.textContent = '×';
+          x.addEventListener('click', function () { el.remove(); });
+          el.appendChild(body);
+          el.appendChild(x);
+          toastBox.appendChild(el);
+          while (toastBox.childElementCount > 4) toastBox.firstChild.remove();
+          setTimeout(function () {
+            el.classList.add('out');
+            setTimeout(function () { el.remove(); }, 300);
+          }, ttl || 7000);
+        }
+        // Optional hook: the orchestrator may call it, and works fine if it never does.
+        window.browsersmithToast = toast;
+
+        /* ------------------------------------------------------------ theme */
+
+        // Reassigned by the theme block below; a no-op keeps every caller safe
+        // if that block ever throws.
+        var setTheme = function () {};
+
+        safe('theme', function () {
+          var btn = $('#btn-theme');
+          function apply(t, save) {
+            root.dataset.theme = t === 'light' ? 'light' : 'dark';
+            if (save) setPref('theme', root.dataset.theme);
+            if (btn) {
+              btn.setAttribute('aria-label',
+                root.dataset.theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme');
+            }
+            var sel = $('#set-theme');
+            if (sel) sel.value = root.dataset.theme;
+          }
+          apply(pref('theme', 'dark'), false);
+          if (btn) {
+            btn.addEventListener('click', function () {
+              apply(root.dataset.theme === 'dark' ? 'light' : 'dark', true);
+            });
+          }
+          setTheme = apply;
+        });
+
+        /* --------------------------------------------------------- settings */
+
+        var settings = $('#settings');
+        var shortcuts = $('#shortcuts');
+
+        function anySheetOpen() {
+          return (settings && settings.open) || (shortcuts && shortcuts.open);
+        }
+        function openSheet(dlg) {
+          if (!dlg || dlg.open) return;
+          // Chromium composites <webview> aggressively; hiding the work area
+          // while a sheet is up guarantees the sheet is the thing you see.
+          root.classList.add('modal-open');
+          if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+        }
+        function closeSheet(dlg) {
+          if (!dlg || !dlg.open) return;
+          if (dlg.close) dlg.close(); else dlg.removeAttribute('open');
+        }
+
+        [settings, shortcuts].forEach(function (dlg) {
+          if (!dlg) return;
+          dlg.addEventListener('close', function () {
+            if (!anySheetOpen()) root.classList.remove('modal-open');
+          });
+          // Clicking the backdrop lands on the dialog element itself.
+          dlg.addEventListener('click', function (e) { if (e.target === dlg) closeSheet(dlg); });
+        });
+
+        safe('settings', function () {
+          var open = $('#btn-settings');
+          if (open) open.addEventListener('click', function () { openSheet(settings); });
+          var help = $('#btn-shortcuts');
+          if (help) help.addEventListener('click', function () { openSheet(shortcuts); });
+
+          var theme = $('#set-theme');
+          if (theme) {
+            theme.value = root.dataset.theme || 'dark';
+            theme.addEventListener('change', function () { setTheme(theme.value, true); });
+          }
+
+          var density = $('#set-density');
+          if (density) {
+            density.value = pref('density', 'comfortable');
+            root.dataset.density = density.value;
+            density.addEventListener('change', function () {
+              root.dataset.density = density.value;
+              setPref('density', density.value);
+            });
+          }
+
+          var motion = $('#set-motion');
+          if (motion) {
+            motion.value = pref('motion', 'auto');
+            root.dataset.motion = motion.value;
+            motion.addEventListener('change', function () {
+              root.dataset.motion = motion.value;
+              setPref('motion', motion.value);
+            });
+          }
+
+          var stamps = $('#set-timestamps');
+          if (stamps) {
+            stamps.checked = pref('timestamps', true);
+            root.dataset.timestamps = stamps.checked ? 'on' : 'off';
+            stamps.addEventListener('change', function () {
+              root.dataset.timestamps = stamps.checked ? 'on' : 'off';
+              setPref('timestamps', stamps.checked);
+            });
+          }
+
+          var toasts = $('#set-toasts');
+          if (toasts) {
+            toasts.checked = pref('toasts', true);
+            toasts.addEventListener('change', function () { setPref('toasts', toasts.checked); });
+          }
+
+          var maxlines = $('#set-maxlines');
+          if (maxlines) {
+            maxlines.value = String(pref('maxlines', 2000));
+            maxlines.addEventListener('change', function () { setPref('maxlines', Number(maxlines.value) || 2000); });
+          }
+
+          // Picking an element means clicking inside a tab, so the sheet has to
+          // get out of the way first.
+          $$('[data-pick]').forEach(function (b) {
+            b.addEventListener('click', function () {
+              closeSheet(settings);
+              var parts = String(b.dataset.pick || '').split('-');
+              toast('Now click the ' + (parts[1] || 'element') + ' inside tab ' +
+                String(parts[0] || '').toUpperCase() + '.', 'info');
+            });
+          });
+          ['#btn-selftest', '#btn-forget'].forEach(function (sel) {
+            var b = $(sel);
+            if (b) b.addEventListener('click', function () { closeSheet(settings); });
+          });
+        });
+
+        /* ------------------------------------------------------- log engine */
+
+        var logEl = $('#log');
+        var logBody = logEl && logEl.parentElement;
+        var jumpBtn = $('#btn-log-jump');
+        var logCount = $('#log-count');
+
+        var KINDS = {
+          file:       { badge: 'FILE',       groups: 'file' },
+          scaffold:   { badge: 'SCAFFOLD',   groups: 'file' },
+          print:      { badge: 'PRINT',      groups: 'verdict' },
+          retry:      { badge: 'RETRY',      groups: 'verdict problem' },
+          verdict:    { badge: 'VERDICT',    groups: 'verdict' },
+          unreviewed: { badge: 'UNREVIEWED', groups: 'verdict problem' },
+          reject:     { badge: 'REJECT',     groups: 'problem' },
+          rotate:     { badge: 'ROTATE',     groups: 'problem' },
+          error:      { badge: 'FAIL',       groups: 'problem' },
+          plan:       { badge: 'PLAN',       groups: 'agent' },
+          chat:       { badge: 'CHAT',       groups: 'agent' },
+          ok:         { badge: '',           groups: '' },
+          info:       { badge: '',           groups: '' }
+        };
+
+        // The orchestrator logs plain strings with one of five colour classes,
+        // so the taxonomy the feed needs is recovered from the text itself.
+        function classify(t, cls) {
+          if (/^\s*wrote workspace\//i.test(t) || /^\s*patched \d+ hunk/i.test(t)) return 'file';
+          if (/scaffold created \d+ file|scaffold done/i.test(t)) return 'scaffold';
+          if (/UNREVIEWED|accepting the file|reviewer unavailable/i.test(t)) return 'unreviewed';
+          if (/\bverdict\b/i.test(t)) {
+            if (/\b(PRINT|PASS)\b/.test(t)) return 'print';
+            if (/\b(RETRY|FIX)\b/.test(t)) return 'retry';
+            return 'verdict';
+          }
+          if (/rotat|hard reset|fresh chat|re-?seed/i.test(t)) return 'rotate';
+          if (/rejected|broke contract|RETRY ->|did not apply|needs a rewrite|keeps returning|backstop/i.test(t)) return 'reject';
+          if (/^\s*(plan:|path =|project →|planner says|planner keeps|auditor:)/i.test(t) ||
+              /^[A-D] (raw|retry):/.test(t) || /^[A-D] returned \d+ chars/.test(t)) return 'plan';
+          if (cls === 'err') return 'error';
+          if (cls === 'a' || cls === 'b') return 'chat';
+          if (cls === 'ok') return 'ok';
+          return 'info';
+        }
+
+        function messageOf(div) {
+          var last = div.lastElementChild;
+          if (last && !last.classList.contains('t')) {
+            return { text: last.textContent || '', cls: (last.className || '').trim() };
+          }
+          return {
+            text: String(div.textContent || '').replace(/^\s*\d{1,2}[:.]\d{2}[:.]\d{2}(\s*[AP]M)?\s*/i, ''),
+            cls: ''
+          };
+        }
+
+        var filterKey = 'all';
+        var query = '';
+
+        function shows(div) {
+          if (filterKey !== 'all') {
+            if ((' ' + (div.dataset.groups || '') + ' ').indexOf(' ' + filterKey + ' ') < 0) return false;
+          }
+          if (query && String(div.textContent || '').toLowerCase().indexOf(query) < 0) return false;
+          return true;
+        }
+
+        function decorate(div) {
+          if (!div || div.nodeType !== 1 || div.dataset.kind) return;
+          var m = messageOf(div);
+          var kind = classify(m.text, m.cls);
+          var meta = KINDS[kind] || KINDS.info;
+          div.dataset.kind = kind;
+          div.dataset.groups = meta.groups;
+          if (meta.badge) div.dataset.badge = meta.badge;
+          // Indented continuation lines the loop prints stay visually subordinate.
+          if (/^\s{2,}\S/.test(m.text)) div.dataset.sub = '1';
+          return kind;
+        }
+
+        function refreshCounts() {
+          if (!logEl) return;
+          var rows = logEl.children, total = rows.length, shown = 0;
+          for (var i = 0; i < total; i++) if (!rows[i].hidden) shown++;
+          if (logCount) {
+            logCount.textContent = (filterKey !== 'all' || query) ? shown + ' / ' + total : String(total);
+          }
+          if (logBody) logBody.dataset.nomatch = (total > 0 && shown === 0) ? 'true' : 'false';
+          var noMatch = $('.empty-nomatch');
+          if (noMatch) noMatch.hidden = !(total > 0 && shown === 0);
+        }
+
+        function applyFilterAll() {
+          if (!logEl) return;
+          var rows = logEl.children;
+          for (var i = 0; i < rows.length; i++) rows[i].hidden = !shows(rows[i]);
+          refreshCounts();
+        }
+
+        safe('log', function () {
+          if (!logEl) return;
+
+          var stick = true, lastTop = 0, ignoreScroll = false;
+          logEl.addEventListener('scroll', function () {
+            if (ignoreScroll) { ignoreScroll = false; return; }
+            stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 12;
+            lastTop = logEl.scrollTop;
+            if (jumpBtn) jumpBtn.hidden = stick;
+          });
+          if (jumpBtn) {
+            jumpBtn.addEventListener('click', function () {
+              stick = true;
+              jumpBtn.hidden = true;
+              logEl.scrollTop = logEl.scrollHeight;
+            });
+          }
+
+          new MutationObserver(function (records) {
+            var added = false;
+            records.forEach(function (r) {
+              Array.prototype.forEach.call(r.addedNodes, function (n) {
+                if (n.nodeType !== 1) return;
+                added = true;
+                var kind = decorate(n);
+                n.hidden = !shows(n);
+                if (kind === 'file' && runState.running) {
+                  runState.files++;
+                  paintMeters();
+                }
+                if (kind === 'error') {
+                  var m = messageOf(n);
+                  toast(m.text.slice(0, 220), 'error');
+                }
+              });
+            });
+            if (!added) return;
+
+            var cap = Number(pref('maxlines', 2000)) || 2000;
+            while (logEl.childElementCount > cap) logEl.firstElementChild.remove();
+
+            // The orchestrator pins the feed to the bottom on every line; put it
+            // back where the reader left it if they had scrolled up.
+            if (!stick) { ignoreScroll = true; logEl.scrollTop = lastTop; }
+            refreshCounts();
+          }).observe(logEl, { childList: true });
+
+          var search = $('#log-search');
+          if (search) {
+            search.addEventListener('input', function () {
+              query = search.value.trim().toLowerCase();
+              applyFilterAll();
+            });
+          }
+
+          var chips = $$('#log-filters .chip');
+          chips.forEach(function (c) {
+            c.addEventListener('click', function () {
+              filterKey = c.dataset.filter || 'all';
+              chips.forEach(function (o) {
+                o.setAttribute('aria-pressed', String(o === c));
+              });
+              applyFilterAll();
+            });
+          });
+
+          var clear = $('#btn-clear-log');
+          if (clear) {
+            clear.addEventListener('click', function () {
+              logEl.textContent = '';
+              refreshCounts();
+            });
+          }
+          refreshCounts();
+        });
+
+        /* ------------------------------------------------------ run report */
+
+        function copyText(text) {
+          var p = null;
+          try { p = navigator.clipboard && navigator.clipboard.writeText(text); } catch (e) { p = null; }
+          if (p && p.then) return p;
+          var ta = d.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+          d.body.appendChild(ta);
+          ta.select();
+          try { d.execCommand('copy'); } finally { ta.remove(); }
+          return Promise.resolve();
+        }
+
+        safe('report', function () {
+          var btn = $('#btn-report');
+          if (!btn) return;
+          btn.addEventListener('click', function () {
+            var modeSel = $('#mode');
+            var modeLabel = modeSel && modeSel.selectedOptions[0] ? modeSel.selectedOptions[0].textContent : '';
+            var project = ($('#project') || {}).value || '';
+            var out = ['## BrowserSmith run', ''];
+            out.push('- **Request:** ' + (($('#prompt') || {}).value || '').trim());
+            out.push('- **Mode:** ' + modeLabel);
+            out.push('- **Project:** workspace/' + project.trim() + '/');
+            out.push('- **Elapsed:** ' + clockText());
+            out.push('- **Status:** ' + String(($('#status') || {}).textContent || '').trim());
+
+            var files = $$('#file-tree .node.file').map(function (n) { return n.dataset.path; });
+            if (files.length) {
+              out.push('', '### Files (' + files.length + ')', '');
+              files.forEach(function (f) { out.push('- `' + f + '`'); });
+            }
+            var notable = $$('#log > div').filter(function (n) {
+              return /^(file|print|retry|unreviewed|reject|rotate|error)$/.test(n.dataset.kind || '');
+            }).slice(-40);
+            if (notable.length) {
+              out.push('', '### Activity', '');
+              notable.forEach(function (n) {
+                out.push('- `' + (n.dataset.badge || '·') + '` ' + messageOf(n).text.trim());
+              });
+            }
+            // Only workspace-relative paths ever leave this window.
+            copyText(out.join('\n')).then(function () {
+              toast('Run report copied as markdown.', 'ok');
+            }, function () {
+              toast('Could not reach the clipboard.', 'error');
+            });
+          });
+        });
+
+        /* --------------------------------------------- run state + pipeline */
+
+        var ORDER = ['plan', 'build', 'review', 'audit'];
+        var STEP_OF = { a: 'plan', b: 'build', c: 'review', d: 'audit' };
+        var runState = {
+          running: false, started: 0, elapsed: 0, files: 0, step: null,
+          done: false, failed: false
+        };
+
+        function clockText() {
+          var ms = runState.running ? Date.now() - runState.started : runState.elapsed;
+          var s = Math.max(0, Math.floor(ms / 1000));
+          var mm = Math.floor(s / 60), ss = s % 60;
+          if (mm >= 60) {
+            return String(Math.floor(mm / 60)) + ':' + ('0' + (mm % 60)).slice(-2) + ':' + ('0' + ss).slice(-2);
+          }
+          return ('0' + mm).slice(-2) + ':' + ('0' + ss).slice(-2);
+        }
+
+        function paintMeters() {
+          var c = $('#run-clock .meter-num');
+          if (c) c.textContent = clockText();
+          var f = $('#run-files .meter-num');
+          if (f) f.textContent = String(runState.files);
+          var box = $('#run-files');
+          if (box) box.dataset.some = runState.files > 0 ? 'true' : 'false';
+        }
+
+        function paintPipeline() {
+          var idx = runState.step ? ORDER.indexOf(runState.step) : -1;
+          $$('#pipeline .step').forEach(function (li, i) {
+            var state = 'idle';
+            if (runState.done) {
+              state = 'done';
+            } else if (runState.failed) {
+              // The stage that was live when the run died stays marked.
+              state = i === idx ? 'failed' : (i < idx ? 'done' : 'idle');
+            } else if (runState.running || idx >= 0) {
+              if (idx >= 0 && i < idx) state = 'done';
+              else if (i === idx) state = 'active';
+              else if (runState.running) state = 'pending';
+            }
+            li.dataset.state = state;
+            var chip = li.querySelector('.step-state');
+            if (chip) {
+              chip.textContent =
+                state === 'active' ? 'working' :
+                state === 'done' ? 'done' :
+                state === 'failed' ? 'failed' :
+                state === 'pending' ? 'queued' : 'idle';
+            }
+          });
+        }
+
+        function setStep(step) {
+          if (!step || runState.step === step) return;
+          runState.step = step;
+          paintPipeline();
+        }
+
+        safe('run-state', function () {
+          var stop = $('#btn-stop');
+          var progress = $('#progress');
+          var statusEl = $('#status');
+          if (!stop) return;
+
+          function sync() {
+            var on = !stop.disabled;
+            if (on === runState.running) return;
+            runState.running = on;
+            root.classList.toggle('is-running', on);
+            if (progress) progress.setAttribute('aria-hidden', on ? 'false' : 'true');
+            if (on) {
+              runState.started = Date.now();
+              runState.files = 0;
+              runState.step = 'plan';
+              runState.done = false;
+              runState.failed = false;
+            } else {
+              runState.elapsed = Date.now() - runState.started;
+              var failed = /fail|error|stopped/i.test(String(statusEl && statusEl.textContent));
+              runState.done = !failed;
+              runState.failed = failed;
+              toast((failed ? 'Run stopped after ' : 'Run finished in ') + clockText() +
+                ' · ' + runState.files + ' file' + (runState.files === 1 ? '' : 's'),
+                failed ? 'error' : 'ok');
+            }
+            paintMeters();
+            paintPipeline();
+          }
+
+          new MutationObserver(sync).observe(stop, { attributes: true, attributeFilter: ['disabled'] });
+          sync();
+
+          // Per-tab chips and the pipeline read the same `busy` class the
+          // orchestrator already toggles - no new plumbing on its side.
+          function syncTabs() {
+            var active = null;
+            $$('.tab[data-tab]').forEach(function (tab) {
+              var busy = tab.classList.contains('busy');
+              var chip = tab.querySelector('.tab-state');
+              var state = busy ? 'busy' : (runState.running ? 'waiting' : 'idle');
+              if (chip) {
+                chip.dataset.state = state;
+                chip.textContent = busy ? 'working' : (runState.running ? 'waiting' : 'idle');
+              }
+              if (busy) active = STEP_OF[tab.dataset.tab];
+            });
+            if (active) setStep(active); else paintPipeline();
+          }
+          $$('.tab[data-tab]').forEach(function (tab) {
+            new MutationObserver(syncTabs).observe(tab, { attributes: true, attributeFilter: ['class'] });
+          });
+          syncTabs();
+
+          if (statusEl) {
+            new MutationObserver(function () {
+              var t = String(statusEl.textContent || '');
+              statusEl.title = t;
+              // Fallback for the stretches where no tab is mid-reply.
+              if (/^A[:\s]|planning|plan\b/i.test(t)) setStep('plan');
+              else if (/^B[:\s]|build|scaffold|writing|patch/i.test(t)) setStep('build');
+              else if (/^C[:\s]|review/i.test(t)) setStep('review');
+              else if (/^D[:\s]|audit|verify|preview|screenshot|install|serv/i.test(t)) setStep('audit');
+            }).observe(statusEl, { childList: true, characterData: true, subtree: true });
+          }
+
+          setInterval(function () {
+            if (runState.running) paintMeters();
+            syncCwd();
+          }, 1000);
+          paintMeters();
+          paintPipeline();
+        });
+
+        /* -------------------------------------------------------- file tree */
+
+        var treeEl = $('#file-tree');
+        var filesEl = $('#files');
+        var collapsed = {};
+        var seenPaths = null;
+
+        function walkNode(node, depth, out, newSet) {
+          Object.keys(node.dirs).sort().forEach(function (name) {
+            var dir = node.dirs[name];
+            out.push({ type: 'dir', name: name, path: dir.path, depth: depth, count: dir.total });
+            if (!collapsed[dir.path]) walkNode(dir, depth + 1, out, newSet);
+          });
+          node.files.sort(function (a, b) { return a.name < b.name ? -1 : 1; }).forEach(function (f) {
+            out.push({ type: 'file', name: f.name, path: f.path, depth: depth, li: f.li, fresh: newSet[f.path] });
+          });
+        }
+
+        function renderTree() {
+          if (!treeEl || !filesEl) return;
+          var rows = $$('#files > li').map(function (li) {
+            return { text: String(li.textContent || '').trim(), li: li };
+          }).filter(function (r) { return r.text; });
+
+          var overflow = '';
+          var tree = { dirs: {}, files: [], total: 0, path: '' };
+          var paths = {};
+
+          rows.forEach(function (r) {
+            if (/^\(\+\d+ more\)$/.test(r.text)) { overflow = r.text; return; }
+            var parts = r.text.split('/').filter(Boolean);
+            var leaf = parts.pop();
+            var node = tree;
+            node.total++;
+            parts.forEach(function (name) {
+              if (!node.dirs[name]) {
+                node.dirs[name] = { dirs: {}, files: [], total: 0, path: (node.path ? node.path + '/' : '') + name };
+              }
+              node = node.dirs[name];
+              node.total++;
+            });
+            node.files.push({ name: leaf || r.text, path: r.text, li: r.li });
+            paths[r.text] = true;
+          });
+
+          // First render is the baseline; after that, anything unseen is new.
+          var newSet = {};
+          if (seenPaths) {
+            Object.keys(paths).forEach(function (p) { if (!seenPaths[p]) newSet[p] = true; });
+          }
+          seenPaths = paths;
+
+          var flat = [];
+          walkNode(tree, 0, flat, newSet);
+
+          treeEl.textContent = '';
+          flat.forEach(function (row) {
+            var b = d.createElement('button');
+            b.type = 'button';
+            b.className = 'node ' + row.type + (row.fresh ? ' is-new' : '');
+            b.style.setProperty('--d', String(row.depth));
+            b.dataset.path = row.path;
+            if (row.type === 'dir' && row.path === projectSlug()) b.classList.add('is-project');
+            if (row.type === 'dir') {
+              b.setAttribute('aria-expanded', String(!collapsed[row.path]));
+              var tw = d.createElement('span');
+              tw.className = 'twisty';
+              tw.setAttribute('aria-hidden', 'true');
+              b.appendChild(tw);
+            } else {
+              var dot = d.createElement('span');
+              dot.className = 'ext';
+              dot.dataset.ext = (row.name.split('.').pop() || '').toLowerCase();
+              dot.setAttribute('aria-hidden', 'true');
+              b.appendChild(dot);
+            }
+            var nm = d.createElement('span');
+            nm.className = 'node-name';
+            nm.textContent = row.name;
+            b.appendChild(nm);
+            if (row.type === 'dir') {
+              var c = d.createElement('span');
+              c.className = 'node-count';
+              c.textContent = String(row.count);
+              b.appendChild(c);
+            }
+            b.title = row.path;
+            treeEl.appendChild(b);
+          });
+
+          if (overflow) {
+            var more = d.createElement('p');
+            more.className = 'tree-more';
+            more.textContent = overflow;
+            treeEl.appendChild(more);
+          }
+
+          var count = $('#files-count');
+          if (count) count.textContent = String(tree.total);
+
+          // The list the orchestrator hands over may hold several projects, so
+          // the header only claims one when the tree actually holds one.
+          var title = $('#files-title');
+          if (title) {
+            var tops = Object.keys(tree.dirs);
+            var only = tops.length === 1 && !tree.files.length ? tops[0] + '/' : '';
+            title.textContent = 'workspace/' + only;
+          }
+        }
+
+        safe('tree', function () {
+          if (!treeEl || !filesEl) return;
+          new MutationObserver(function () { safe('tree.render', renderTree); })
+            .observe(filesEl, { childList: true });
+
+          treeEl.addEventListener('click', function (e) {
+            var b = e.target.closest ? e.target.closest('.node') : null;
+            if (!b) return;
+            if (b.classList.contains('dir')) {
+              var p = b.dataset.path;
+              collapsed[p] = !collapsed[p];
+              renderTree();
+              return;
+            }
+            $$('#file-tree .node.file').forEach(function (n) { n.classList.remove('is-sel'); });
+            b.classList.add('is-sel');
+            // Forward to the row the orchestrator owns, so if it ever wires a
+            // click handler on #files the tree drives it for free.
+            var src = null;
+            $$('#files > li').some(function (li) {
+              if (String(li.textContent || '').trim() === b.dataset.path) { src = li; return true; }
+              return false;
+            });
+            if (src) src.click();
+          });
+
+          var collapseBtn = $('#btn-files-collapse');
+          if (collapseBtn) {
+            collapseBtn.addEventListener('click', function () {
+              var any = $$('#file-tree .node.dir').some(function (n) {
+                return n.getAttribute('aria-expanded') === 'true';
+              });
+              $$('#file-tree .node.dir').forEach(function (n) { collapsed[n.dataset.path] = any; });
+              renderTree();
+            });
+          }
+          renderTree();
+        });
+
+        /* --------------------------------------------------------- terminal */
+
+        var termIn = $('#term-input');
+        var termEl = $('#terminal');
+
+        function projectSlug() {
+          var v = String((($('#project') || {}).value || '')).trim();
+          return v;
+        }
+        function syncCwd() {
+          var slug = projectSlug();
+          var label = 'workspace/' + (slug ? slug + '/' : '');
+          var cwd = $('#term-cwd');
+          if (cwd && cwd.textContent !== label) cwd.textContent = label;
+          if (termIn) {
+            var ph = 'npm run build — runs in ' + label;
+            if (termIn.placeholder !== ph) termIn.placeholder = ph;
+          }
+        }
+
+        safe('terminal', function () {
+          if (termIn) {
+            var history = [];
+            var cursor = -1;
+            // Registered before app.js, and on the same element, so the entry is
+            // recorded before the orchestrator clears the box.
+            termIn.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter') {
+                var v = termIn.value.trim();
+                if (v && history[history.length - 1] !== v) history.push(v);
+                if (history.length > 200) history.shift();
+                cursor = -1;
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                if (!history.length) return;
+                e.preventDefault();
+                cursor = cursor < 0 ? history.length - 1 : Math.max(0, cursor - 1);
+                termIn.value = history[cursor];
+                termIn.setSelectionRange(termIn.value.length, termIn.value.length);
+              } else if (e.key === 'ArrowDown') {
+                if (cursor < 0) return;
+                e.preventDefault();
+                cursor = cursor + 1;
+                if (cursor >= history.length) { cursor = -1; termIn.value = ''; return; }
+                termIn.value = history[cursor];
+                termIn.setSelectionRange(termIn.value.length, termIn.value.length);
+              }
+            });
+          }
+          var clear = $('#btn-clear-term');
+          if (clear && termEl) clear.addEventListener('click', function () { termEl.textContent = ''; });
+          var proj = $('#project');
+          if (proj) proj.addEventListener('input', syncCwd);
+          syncCwd();
+        });
+
+        /* ---------------------------------------------------------- preview */
+
+        safe('preview', function () {
+          var url = $('#preview-url');
+          var view = $('.view-preview');
+          var ext = $('#btn-open-external');
+          if (!url || !view) return;
+          function sync() {
+            var t = String(url.textContent || '').trim();
+            var live = /^(https?|file):/i.test(t) && t !== 'about:blank';
+            view.dataset.empty = live ? 'false' : 'true';
+            if (ext) {
+              ext.disabled = !/^https?:\/\//i.test(t);
+              ext.title = ext.disabled
+                ? 'Available once the project is running on a local server'
+                : 'Open the running project in your default browser';
+            }
+          }
+          new MutationObserver(sync).observe(url, { childList: true, characterData: true, subtree: true });
+          sync();
+        });
+
+        /* ------------------------------------------------ mode + validation */
+
+        safe('mode', function () {
+          var sel = $('#mode');
+          var hint = $('#mode-hint');
+          if (!sel || !hint) return;
+
+          var COST = {
+            auto: 'No scaffold. The planner picks the stack from your words, so a small request stays small.',
+            nextjs: 'Scaffolds Next.js and runs npm install first — about a minute before the first file.',
+            vite: 'Scaffolds Vite + React and runs npm install first — about a minute before the first file.',
+            static: 'No install and no build step — the first file lands in seconds.',
+            node: 'Scaffolds a package.json, then runs the entry point and reads the real output.',
+            python: 'Scaffolds requirements.txt, then runs the entry point and reads the real output.'
+          };
+
+          // Labels come from the shared mode table when the bridge is there, so
+          // the dropdown can never drift from what the log prints.
+          safe('mode.labels', function () {
+            var bridge = window.browsersmith || window.buildgpt;
+            var MODES = bridge && bridge.protocol && bridge.protocol.MODES;
+            if (!MODES) return;
+            $$('#mode option').forEach(function (o) {
+              var m = MODES[o.value];
+              if (m && m.label) o.textContent = m.label;
+            });
+          });
+
+          function paint() {
+            hint.textContent = COST[sel.value] || '';
+          }
+          sel.addEventListener('change', paint);
+          paint();
+        });
+
+        safe('validate', function () {
+          var run = $('#btn-run');
+          var prompt = $('#prompt');
+          if (!run || !prompt) return;
+          run.addEventListener('click', function () {
+            if (prompt.value.trim()) { prompt.classList.remove('invalid'); return; }
+            // The orchestrator no-ops on an empty request; say so out loud.
+            prompt.classList.add('invalid');
+            prompt.focus();
+            toast('Describe what to build first.', 'error');
+            setTimeout(function () { prompt.classList.remove('invalid'); }, 1200);
+          });
+          prompt.addEventListener('input', function () { prompt.classList.remove('invalid'); });
+
+          $$('#examples .chip').forEach(function (c) {
+            c.addEventListener('click', function () {
+              prompt.value = c.dataset.example || '';
+              prompt.dispatchEvent(new Event('input', { bubbles: true }));
+              prompt.focus();
+            });
+          });
+
+          var session = $('#session');
+          var gate = $('#login-gate');
+          if (session && gate) {
+            var syncGate = function () {
+              gate.hidden = !session.classList.contains('out');
+            };
+            new MutationObserver(syncGate).observe(session, { attributes: true, attributeFilter: ['class'] });
+            syncGate();
+          }
+        });
+
+        /* ------------------------------------------------- resizable  panes */
+
+        var LAYOUT_KEY = 'browsersmith.layout';
+        var layout = safe('layout', function () {
+          return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+        }) || {};
+        function saveLayout() {
+          safe('layout.save', function () { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); });
+        }
+        function applyLayout() {
+          if (layout.sidebar) root.style.setProperty('--sidebar-w', layout.sidebar + 'px');
+          if (layout.dock) root.style.setProperty('--dock-h', layout.dock + 'px');
+          if (layout.files) root.style.setProperty('--files-w', layout.files + 'px');
+        }
+        applyLayout();
+
+        function makeSplitter(el, opts) {
+          if (!el) return;
+          function clamp(v) { return Math.max(opts.min, Math.min(opts.max(), v)); }
+          function commit(v) {
+            v = Math.round(clamp(v));
+            root.style.setProperty(opts.varName, v + 'px');
+            layout[opts.key] = v;
+          }
+          el.addEventListener('pointerdown', function (e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            // Webviews swallow pointer events; muting them keeps the drag in
+            // this document for the whole gesture.
+            root.classList.add('dragging');
+            el.setPointerCapture(e.pointerId);
+            var move = function (ev) { commit(opts.from(ev)); };
+            var up = function () {
+              root.classList.remove('dragging');
+              el.removeEventListener('pointermove', move);
+              el.removeEventListener('pointerup', up);
+              el.removeEventListener('pointercancel', up);
+              saveLayout();
+            };
+            el.addEventListener('pointermove', move);
+            el.addEventListener('pointerup', up);
+            el.addEventListener('pointercancel', up);
+          });
+          el.addEventListener('keydown', function (e) {
+            var step = e.shiftKey ? 48 : 16;
+            var cur = parseFloat(getComputedStyle(root).getPropertyValue(opts.varName)) || opts.def;
+            var neg = opts.axis === 'x' ? 'ArrowRight' : 'ArrowDown';
+            var pos = opts.axis === 'x' ? 'ArrowLeft' : 'ArrowUp';
+            if (e.key === pos) { e.preventDefault(); commit(cur + step); saveLayout(); }
+            else if (e.key === neg) { e.preventDefault(); commit(cur - step); saveLayout(); }
+            else if (e.key === 'Home') { e.preventDefault(); commit(opts.def); saveLayout(); }
+          });
+        }
+
+        safe('splitters', function () {
+          makeSplitter($('#split-sidebar'), {
+            varName: '--sidebar-w', key: 'sidebar', axis: 'x', def: 372, min: 300,
+            max: function () { return Math.max(320, window.innerWidth - 480); },
+            from: function (ev) { return window.innerWidth - ev.clientX; }
+          });
+          makeSplitter($('#split-dock'), {
+            varName: '--dock-h', key: 'dock', axis: 'y', def: 208, min: 96,
+            max: function () { return Math.max(120, window.innerHeight - 320); },
+            from: function (ev) {
+              var work = $('.work');
+              return work ? work.getBoundingClientRect().bottom - ev.clientY : 208;
+            }
+          });
+          makeSplitter($('#split-dock-cols'), {
+            varName: '--files-w', key: 'files', axis: 'x', def: 280, min: 180,
+            max: function () {
+              var dock = $('#dock');
+              return dock ? Math.max(200, dock.getBoundingClientRect().width - 260) : 480;
+            },
+            from: function (ev) {
+              var dock = $('#dock');
+              return dock ? dock.getBoundingClientRect().right - ev.clientX : 280;
+            }
+          });
+
+          var reset = $('#btn-reset-layout');
+          if (reset) {
+            reset.addEventListener('click', function () {
+              layout = {};
+              saveLayout();
+              ['--sidebar-w', '--dock-h', '--files-w'].forEach(function (v) { root.style.removeProperty(v); });
+              toast('Panes reset to their default sizes.', 'ok');
+            });
+          }
+        });
+
+        /* -------------------------------------------------------- dock + view */
+
+        function setDock(open) {
+          root.classList.toggle('dock-hidden', !open);
+          var b = $('#btn-toggle-dock');
+          if (b) b.setAttribute('aria-expanded', String(!!open));
+          setPref('dock', !!open);
+        }
+
+        safe('dock', function () {
+          var b = $('#btn-toggle-dock');
+          setDock(pref('dock', true));
+          if (b) {
+            b.addEventListener('click', function () {
+              setDock(root.classList.contains('dock-hidden'));
+            });
+          }
+        });
+
+        // The segmented control is styled off #views[data-view]; mirroring it
+        // onto aria-pressed is what a screen reader actually reads.
+        safe('view-state', function () {
+          var views = $('#views');
+          var a = $('#btn-view-agents');
+          var p = $('#btn-view-preview');
+          if (!views || !a || !p) return;
+          function sync() {
+            var v = views.dataset.view === 'preview';
+            a.setAttribute('aria-pressed', String(!v));
+            p.setAttribute('aria-pressed', String(v));
+          }
+          new MutationObserver(sync).observe(views, { attributes: true, attributeFilter: ['data-view'] });
+          sync();
+        });
+
+        /* --------------------------------------------------------- keyboard */
+
+        function typing(el) {
+          if (!el) return false;
+          var t = (el.tagName || '').toLowerCase();
+          return t === 'input' || t === 'textarea' || t === 'select' || el.isContentEditable;
+        }
+
+        safe('keys', function () {
+          d.addEventListener('keydown', function (e) {
+            var mod = e.ctrlKey || e.metaKey;
+            var target = e.target;
+
+            if (e.key === 'Escape') {
+              if (anySheetOpen()) return; // the dialog closes itself
+              var stop = $('#btn-stop');
+              if (stop && !stop.disabled) { e.preventDefault(); stop.click(); }
+              return;
+            }
+
+            if (mod && e.key === 'Enter') {
+              var run = $('#btn-run');
+              if (run && !run.disabled) { e.preventDefault(); run.click(); }
+              return;
+            }
+
+            if (!mod && !e.altKey && e.key === '?' && !typing(target)) {
+              e.preventDefault();
+              openSheet(shortcuts);
+              return;
+            }
+
+            if (!mod) return;
+
+            if (e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+              e.preventDefault();
+              setTheme(root.dataset.theme === 'dark' ? 'light' : 'dark', true);
+              return;
+            }
+            if (e.shiftKey) return;
+
+            switch (e.key) {
+              case '1': case '2': case '3': case '4': {
+                e.preventDefault();
+                var tag = ['a', 'b', 'c', 'd'][Number(e.key) - 1];
+                var agents = $('#btn-view-agents');
+                if (agents) agents.click();
+                var wv = d.getElementById('tab-' + tag);
+                if (wv && wv.focus) wv.focus();
+                break;
+              }
+              case 'p': case 'P': {
+                e.preventDefault();
+                var views = $('#views');
+                var next = views && views.dataset.view === 'preview' ? '#btn-view-agents' : '#btn-view-preview';
+                var b = $(next);
+                if (b) b.click();
+                break;
+              }
+              case 'j': case 'J':
+                e.preventDefault();
+                setDock(root.classList.contains('dock-hidden'));
+                break;
+              case 'k': case 'K': {
+                e.preventDefault();
+                var s = $('#log-search');
+                if (s) { s.focus(); s.select(); }
+                break;
+              }
+              case 'l': case 'L': {
+                e.preventDefault();
+                var c = $('#btn-clear-log');
+                if (c) c.click();
+                break;
+              }
+              case ',': {
+                e.preventDefault();
+                openSheet(settings);
+                break;
+              }
+              case '`': {
+                e.preventDefault();
+                setDock(true);
+                if (termIn) termIn.focus();
+                break;
+              }
+              default: break;
+            }
+          });
+        });
+      })();
+    </script>
     <script src="app.js"></script>
   </body>
 </html>

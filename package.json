@@ -1,18 +1,53 @@
 {
-  "name": "buildgpt",
-  "version": "0.1.0",
-  "description": "Four-tab ChatGPT agent loop that plans, writes, reviews and audits real projects, then runs them",
+  "name": "browsersmith",
+  "productName": "BrowserSmith",
+  "version": "1.0.0",
+  "description": "Drives four ChatGPT tabs as planner, builder, reviewer and auditor: one sentence becomes a real project that is written, reviewed, installed, run, screenshotted and repaired - no API key, it automates the web UI",
+  "keywords": [
+    "electron",
+    "ai-agent",
+    "chatgpt",
+    "code-generation",
+    "multi-agent",
+    "browser-automation",
+    "no-api-key",
+    "desktop-app"
+  ],
+  "homepage": "https://github.com/soufian3hm/BrowserSmith#readme",
+  "bugs": {
+    "url": "https://github.com/soufian3hm/BrowserSmith/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soufian3hm/BrowserSmith.git"
+  },
+  "license": "MIT",
+  "author": "soufian3hm (https://github.com/soufian3hm)",
   "main": "src/main/main.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "start": "electron .",
     "mcp": "node src/mcp/server.js",
-    "test": "node --test test/protocol.test.js"
+    "test": "node --test \"test/**/*.test.js\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "package": "electron-builder --publish never",
+    "package:win": "electron-builder --win --publish never",
+    "package:mac": "electron-builder --mac --publish never",
+    "package:linux": "electron-builder --linux --publish never"
   },
   "devDependencies": {
-    "@electron/packager": "^20.0.4",
-    "electron": "^33.2.0",
-    "png-to-ico": "^3.0.2",
-    "sharp": "^0.35.3"
+    "@eslint/js": "^10.0.1",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.8.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.8.0",
+    "prettier": "^3.9.6"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
