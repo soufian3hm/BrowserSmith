@@ -214,9 +214,26 @@ mount, reseed. Retrying into the same dead composer never worked.
 **A 51KB paste wedges the composer.** Typing a whole file into ProseMirror took
 long enough that the tab looked hung, the readiness check timed out, and the
 run silently skipped review entirely. The reviewer answers one word, so it now
-gets a **condensed** body: about 2500 characters of head, 1500 of tail, and a
-marker naming how many characters were elided. The reviewer's contract tells it
-that marker is ours, never the author's.
+gets a **condensed** body: head, tail, and a marker naming how many characters
+were elided. Two details matter. The reviewer's contract says that marker is
+ours and never the author's — without that it reads the gap as truncation. And
+the budget cannot be miserly: at 4000 characters an ordinary 22KB page became
+head-and-tail around a chasm, and the reviewer rejected complete files all
+afternoon for looking half-written.
+
+**Prompts were arriving scrambled, and it looked like the reviewer's fault.**
+Large prompts are inserted in chunks. Each chunk was preceded by a
+`webContents.focus()` call, guarding against another tab stealing focus
+mid-insert. But focusing a contenteditable **restores its saved selection**, so
+every piece after the first landed at the old caret instead of after its
+predecessor. Anything over 4KB arrived shuffled — in one run the closing
+instruction *"reply with exactly one word"* sat buried in the middle of the
+file with more code after it. The reviewer was reading a jumbled document and
+correctly refusing it; the log just said `verdict = RETRY`, which reads like a
+fussy model rather than a transport bug. Focus is now taken **once**, before
+the first chunk, and only genuinely huge bodies are split at all. Every unit
+test passed on both sides of this; the only way to see it was to open the
+reviewer's composer and read what had actually landed there.
 
 **Node refuses to spawn `.cmd` files.** Since Node 20.12, spawning a `.cmd`
 shim with `shell: false` throws `EINVAL` (CVE-2024-27980 hardening) — which is
