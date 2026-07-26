@@ -33,6 +33,7 @@ files:
   - src/**/*.html
   - src/**/*.css
   - assets/logo.ico
+  - assets/license.txt
   - assets/logo-512.png
   - "!.profile"
   - "!.profile/**"
@@ -57,6 +58,27 @@ win:
   artifactName: ${productName}-${version}-win-${arch}.${ext}
 
 nsis:
+  # Branding. NSIS insists on BMP for both, generated from logo.png by
+  # `npm run installer-art`.
+  installerIcon: assets/logo.ico
+  uninstallerIcon: assets/logo.ico
+  installerHeaderIcon: assets/logo.ico
+  installerSidebar: assets/installerSidebar.bmp
+  uninstallerSidebar: assets/installerSidebar.bmp
+  installerHeader: assets/installerHeader.bmp
+  # The MIT terms are shown and must be accepted, so nobody installs this
+  # without being told what it is licensed under.
+  license: assets/license.txt
+  # Names the user actually sees: the shortcut, the Add/Remove Programs entry,
+  # and the Start-menu folder.
+  shortcutName: BrowserSmith
+  uninstallDisplayName: BrowserSmith ${version}
+  menuCategory: false
+  # Launch it when the installer finishes - the first run is the login step.
+  runAfterFinish: true
+  # A stable GUID keeps upgrades replacing the same entry instead of stacking
+  # a second BrowserSmith in Add/Remove Programs.
+  guid: 8f3a6d21-5c14-4b7e-9f2a-3c0d5e7a1b94
   oneClick: false
   perMachine: false # per-user install: %LOCALAPPDATA% is writable, Program Files is not
   allowToChangeInstallationDirectory: true

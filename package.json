@@ -39,7 +39,8 @@
     "package:win": "electron-builder --win --publish never",
     "package:mac": "electron-builder --mac --publish never",
     "package:linux": "electron-builder --linux --publish never",
-    "icons": "node tools/icons.js"
+    "icons": "node tools/icons.js",
+    "installer-art": "node tools/installer-art.js"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

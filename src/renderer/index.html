@@ -23,38 +23,17 @@
     <!-- ============================================================ header -->
     <header class="appbar">
       <div class="lockup">
-        <!-- Mirrors assets/icon.svg so the lockup renders with zero file or
-             network dependency, in dev and inside a packaged asar alike. -->
-        <svg class="logomark" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
-          <defs>
-            <linearGradient id="bs-plate" x1="0.12" y1="0" x2="0.85" y2="1">
-              <stop offset="0" stop-color="#0FA98C" />
-              <stop offset="0.42" stop-color="#0B8A85" />
-              <stop offset="1" stop-color="#0E3350" />
-            </linearGradient>
-            <linearGradient id="bs-mark" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0" stop-color="#FFFFFF" />
-              <stop offset="1" stop-color="#E9EFF3" />
-            </linearGradient>
-          </defs>
-          <rect width="512" height="512" rx="116" fill="url(#bs-plate)" />
-          <g fill="url(#bs-mark)">
-            <path fill-rule="evenodd" d="M132 100 h248 a40 40 0 0 1 40 40 v232 a40 40 0 0 1 -40 40 h-248 a40 40 0 0 1 -40 -40 v-232 a40 40 0 0 1 40 -40 z M124 176 v196 a16 16 0 0 0 16 16 h232 a16 16 0 0 0 16 -16 v-196 z" />
-            <circle cx="156" cy="138" r="12" />
-            <circle cx="194" cy="138" r="12" />
-            <circle cx="232" cy="138" r="12" />
-            <path d="M150 322 h212 a10 10 0 0 1 10 10 v18 a10 10 0 0 1 -10 10 h-24 c5 14 15 24 26 29 a7 7 0 0 1 -3 13 h-100 a7 7 0 0 1 -3 -13 c11 -5 21 -15 26 -29 h-24 a10 10 0 0 1 -10 -10 v-18 a10 10 0 0 1 10 -10 z" />
-            <g transform="rotate(40 330 214)">
-              <path d="M286 186 h60 a15 15 0 0 1 15 15 v28 a15 15 0 0 1 -15 15 h-60 c-9 0 -14 -7 -17 -15 -3 -10 -3 -16 0 -26 3 -8 8 -17 17 -17 z" />
-              <rect x="346" y="201" width="92" height="22" rx="11" />
-            </g>
-            <path d="M246 236 l10 30 24 -17 -15 26 30 6 -30 6 15 26 -24 -17 -10 30 -10 -30 -24 17 15 -26 -30 -6 30 -6 -15 -26 24 17 z" />
-          </g>
-        </svg>
-        <span class="wordmark">
-          <span class="brand">BrowserSmith</span>
-          <span class="tagline">four agents, one real project</span>
-        </span>
+        <!-- The real logo, not a redrawn copy. asar is disabled for this app
+             (the webview preload is referenced by file:// path), so a plain
+             relative src resolves in dev and in the packaged build alike. -->
+        <img
+          class="logomark"
+          src="../../assets/png/logo-128.png"
+          alt="BrowserSmith"
+          width="128"
+          height="128"
+          draggable="false"
+        />
       </div>
 
       <div class="appbar-right">
