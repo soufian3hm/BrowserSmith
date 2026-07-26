@@ -5,6 +5,7 @@
 .DS_Store
 .env
 .profile/
+AUDIT.md
 build-out/
 dist-app/
 dist/
