@@ -1,6 +1,13 @@
-node_modules/
-workspace/
+*-darwin-*/
+*-linux-*/
+*-win32-*/
+*.log
 .DS_Store
+.env
 .profile/
-dist-app/
 build-out/
+dist-app/
+dist/
+node_modules/
+out/
+workspace/

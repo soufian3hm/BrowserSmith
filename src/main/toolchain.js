@@ -162,6 +162,7 @@ function startProcessServer(win, project, cmd, args, opts = {}) {
         shell: false,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: !IS_WIN, // gives treeKill a process group to signal
         env: {
           ...process.env,
           NO_COLOR: '1',
@@ -219,9 +220,24 @@ function startProcessServer(win, project, cmd, args, opts = {}) {
 
 /** Kill a process and everything it spawned. */
 function treeKill(child) {
+  if (!child || child.killed) return;
   try {
-    if (IS_WIN) spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
-    else child.kill('SIGTERM');
+    if (IS_WIN) {
+      // spawn reports launch failure via an 'error' EVENT, not a throw - an
+      // unhandled one is an uncaught exception that takes down the main process.
+      const k = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+      k.on('error', () => {});
+      return;
+    }
+    // The real server is a grandchild (npm -> next -> node), so killing the
+    // wrapper alone left the port bound forever. Servers are spawned detached,
+    // which makes the pid a process-group id we can signal as a whole.
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+      setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 3000).unref?.();
+    } catch {
+      child.kill('SIGTERM');
+    }
   } catch { /* already gone */ }
 }
 

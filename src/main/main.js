@@ -202,6 +202,30 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch((err) => {
+  // Installed under Program Files, a read-only folder or a locked OneDrive
+  // path, assertWritable rejects and createWindow is never reached: the user
+  // gets a running process and no window, with nothing explaining why.
+  const { dialog } = require('electron');
+  dialog.showErrorBox(
+    'BrowserSmith cannot start',
+    `The profile folder is not writable:
+${PROFILE_DIR}
+
+${err && err.message ? err.message : err}`
+  );
+  app.exit(1);
+});
+
+// window-all-closed never fires when the quit came from the menu, Cmd+Q or
+// app.quit(), which left a dev server per run holding its port after exit.
+let cleanedUp = false;
+app.on('before-quit', (e) => {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  e.preventDefault();
+  toolchain.stopAll();
+  sessionStore.flush().finally(() => app.exit(0));
 });
 
 app.on('window-all-closed', async () => {

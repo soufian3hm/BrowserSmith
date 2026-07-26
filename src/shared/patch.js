@@ -30,6 +30,13 @@ const PATCH_FORMAT = [
   '- If the fix genuinely cannot be expressed as a patch, reply with the single word REWRITE.',
 ].join('\n');
 
+const FENCE_LINE = /^\s*```[\w+#.-]*\s*$/;
+const stripFences = (t) =>
+  String(t || '')
+    .split('\n')
+    .filter((l) => !FENCE_LINE.test(l))
+    .join('\n');
+
 const BLOCK_RE =
   /<{3,}\s*FIND\s*\r?\n([\s\S]*?)\r?\n={3,}\s*\r?\n([\s\S]*?)\r?\n>{3,}\s*REPLACE/g;
 
@@ -40,8 +47,11 @@ function parsePatches(reply) {
   let m;
   BLOCK_RE.lastIndex = 0;
   while ((m = BLOCK_RE.exec(text)) !== null) {
-    const find = m[1];
-    const replace = m[2];
+    // Models wrap patches in a code fence constantly, despite being told not
+    // to. Left in, the closing ``` becomes part of the replacement and is
+    // written straight into the file - and this path bypasses the reviewer.
+    const find = stripFences(m[1]);
+    const replace = stripFences(m[2]);
     if (find.trim()) out.push({ find, replace });
   }
   return out;

@@ -13,7 +13,7 @@
  */
 
 const { protocol, fs, session, tabs, tool, term, shell, preloadPath, partition, site } =
-  window.buildgpt;
+  window.browsersmith || window.buildgpt;
 
 const els = {
   a: document.getElementById('tab-a'),
@@ -435,7 +435,11 @@ async function buildFile(project, filePath, request, mode) {
     }
     // unfence removes a fence wrapping the whole reply; ChatGPT also splits one
     // file across several code blocks, leaving ``` lines mid-file.
-    const candidate = protocol.stripStrayFences(protocol.unfence(buildReply), filePath);
+    // extractBody handles every shape ChatGPT actually returns: one fence,
+    // several fences that are really one file, fences with prose around them,
+    // and no fences at all. unfence alone only stripped a fence wrapping the
+    // WHOLE reply, so "Here is the file:" was being written into the file.
+    const candidate = protocol.extractBody(buildReply, filePath);
     const bad = protocol.rejectReason(candidate);
     if (bad) {
       log(`B output rejected (${bad}), retrying`, 'err');
@@ -618,14 +622,14 @@ async function runProject(request) {
       status('planner: fixing');
       const fixReply = await askForPath(
         `The project was built and run. It did not pass.\n` +
-          `PROBLEM: ${condense(fix, 1200)}\n\nReply with the ONE file path to rewrite to fix this.`
+          `PROBLEM: ${protocol.condense(fix, 1200)}\n\nReply with the ONE file path to rewrite to fix this.`
       );
       const fixPath = protocol.parsePath(fixReply);
       if (!fixPath || fixPath === 'DONE') break;
       const res = await buildFile(
         project,
         fixPath,
-        `${request}\n\nFIX REQUIRED: ${condense(fix, 1200)}`,
+        `${request}\n\nFIX REQUIRED: ${protocol.condense(fix, 1200)}`,
         mode
       );
       if (!res) break;
@@ -660,7 +664,7 @@ async function runProject(request) {
  * patch silently corrupts a file, so anything uncertain declines.
  */
 async function tryPatch(project, errorText) {
-  const patch = window.buildgpt.patch;
+  const patch = (window.browsersmith || window.buildgpt).patch;
   if (!patch) return null;
 
   const loc = patch.parseErrorLocation(errorText);
@@ -681,7 +685,7 @@ async function tryPatch(project, errorText) {
     reply = await askRole(
       ROLES.builder,
       `This file is throwing an error at line ${loc.line}.\n\n` +
-        `ERROR:\n${condense(errorText, 800)}\n\n` +
+        `ERROR:\n${protocol.condense(errorText, 800)}\n\n` +
         `FILE (${loc.file}), lines around the error:\n${patch.excerpt(source, loc.line)}\n\n` +
         patch.PATCH_FORMAT
     );
@@ -826,6 +830,21 @@ async function verifyByPlan(project, request, p) {
   }
 
   return judgePage(project, request, p, url, runOutput);
+}
+
+/**
+ * What we are allowed to tell a chat tab about where the project is running.
+ *
+ * A file:// preview URL contains the absolute path - and therefore the user's
+ * Windows account name - and it was being typed verbatim into the conversation
+ * on every static-preview run. Localhost URLs are fine and useful; anything on
+ * disk becomes a project-relative label.
+ */
+function safeLocation(url, project) {
+  const u = String(url || '');
+  if (/^https?:\/\//i.test(u)) return u;
+  const rel = u.split('/').slice(-1)[0] || 'index.html';
+  return `workspace/${project}/${rel}`;
 }
 
 /** Dev-server compile errors, if the bridge exposes them. */
@@ -1406,6 +1425,9 @@ async function pollAutopilot() {
 async function runAutopilot(request) {
   if (running) return;
   running = true;
+  // Stop sets abort and only the manual Run handler cleared it, so one Stop
+  // press bricked autopilot for the rest of the session.
+  abort = false;
   els.run.disabled = true;
   els.stop.disabled = false;
   try {

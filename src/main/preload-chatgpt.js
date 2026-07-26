@@ -893,14 +893,16 @@ async function awaitReply(opts = {}) {
     // behind "Show more", and that button's text arriving in the transcript
     // used to look like the reply landing - the quiet window then elapsed
     // before the real answer had started streaming.
-    const meaningful = delta
-      .split('\n')
-      .filter((l) => {
-        const t = l.trim();
-        return t && !PLACEHOLDER.test(t) && !CHROME.test(t);
-      })
-      .join('\n')
-      .trim();
+    // Drop status lines and message chrome, but KEEP blank lines: this value is
+    // what awaitReply returns, and it becomes the file written to disk. Filtering
+    // empty lines out here silently stripped every blank line from every file the
+    // app has ever produced - no paragraph breaks in markdown, no spacing between
+    // functions. Only the emptiness CHECK below ignores whitespace.
+    const kept = delta.split('\n').filter((l) => {
+      const t = l.trim();
+      return !t || (!PLACEHOLDER.test(t) && !CHROME.test(t));
+    });
+    const meaningful = kept.join('\n').replace(/^\n+/, '').replace(/\s+$/, '');
 
     if (meaningful !== lastDelta) {
       lastDelta = meaningful;
@@ -938,8 +940,16 @@ async function awaitReply(opts = {}) {
     }
   }
 
-  if (lastDelta) return lastDelta;
-  throw new Error('no response detected before timeout');
+  // Out of budget. Handing back lastDelta while the model is STILL streaming
+  // returns half a file that looks complete - the exact failure that wrote a
+  // 617-char stub over a 6400-char answer. Only salvage once generation has
+  // demonstrably stopped.
+  if (lastDelta && !isGenerating()) return lastDelta;
+  throw new Error(
+    isGenerating()
+      ? 'still generating after the full timeout - reply abandoned rather than truncated'
+      : 'no response detected before timeout'
+  );
 }
 
 /** Diagnostic: open the model menu and report what the DOM actually contains. */
