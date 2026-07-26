@@ -370,7 +370,17 @@ async function ensureSeeded(modeKey) {
   // was 28s of a 113s run - a quarter of the wall clock spent waiting on four
   // things that never needed to wait for each other.
   status(`seeding ${pending.length} tabs`);
-  const results = await Promise.allSettled(pending.map((tag) => seedTab(tag)));
+  // Staggered, not simultaneous: four identical requests landing in the same
+  // millisecond looks like a burst and has drawn ERR_ADDRESS_UNREACHABLE.
+  // 400ms apart keeps nearly all the parallel win without the thundering herd.
+  const results = await Promise.allSettled(
+    pending.map(
+      (tag, i) =>
+        new Promise((resolve, reject) =>
+          setTimeout(() => seedTab(tag).then(resolve, reject), i * 400)
+        )
+    )
+  );
 
   // Concurrency is the one thing that could plausibly upset the composer, so
   // anything that failed gets a serial second chance before the run gives up.

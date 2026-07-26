@@ -622,6 +622,7 @@ async function awaitReply(opts = {}) {
   let lastDelta = null;
   let lastChange = Date.now();
   let sawGenerating = false;
+  let idleTicks = 0; // consecutive polls with no stop button visible
 
   while (Date.now() - started < timeoutMs) {
     await sleep(200);
@@ -659,6 +660,7 @@ async function awaitReply(opts = {}) {
 
     const stableFor = Date.now() - lastChange;
     if (isGenerating()) {
+      idleTicks = 0;
       // A stop button that never disappears - or one that turns out not to be
       // about generation at all - must not cost us the entire timeout, so we
       // still give up on it once the answer has been unchanged for far longer
@@ -666,11 +668,14 @@ async function awaitReply(opts = {}) {
       if (stableFor > Math.max(quietMs * 3, 20000)) return meaningful;
       continue;
     }
-    // The stop button vanishing is a definitive end-of-stream signal, so once
-    // we have seen it there is nothing to wait for beyond one settling tick.
-    // Guessing from "text stopped changing" alone still needs the long window.
-    const quiet = sawGenerating ? 600 : quietMs;
-    if (stableFor > quiet) return meaningful;
+    // The stop button is a strong end-of-stream signal but not an instant one:
+    // it flickers between tokens, and a 600ms settle on a single absent sample
+    // truncated a 6400-char reply to 617 and turned a "RETRY" verdict into
+    // "RE". Require it to stay gone for several consecutive polls as well as
+    // the content holding still.
+    idleTicks++;
+    const quiet = sawGenerating ? 1500 : quietMs;
+    if (stableFor > quiet && idleTicks >= 5) return meaningful;
   }
 
   if (lastDelta) return lastDelta;
@@ -962,11 +967,11 @@ function declutter() {
 
 function watchForBanners() {
   declutter();
-  const obs = new MutationObserver(() => declutter());
-  obs.observe(document.documentElement, { childList: true, subtree: true });
-  // The observer misses banners that are only re-styled into view, so a slow
-  // sweep backs it up without costing anything measurable.
-  setInterval(declutter, 4000);
+  // Deliberately a slow poll and NOT a MutationObserver: streaming a reply
+  // mutates the DOM on every token, and a full button scan per mutation
+  // janked the page badly enough that the transcript looked frozen - partial
+  // replies then read as "settled" and came back truncated.
+  setInterval(declutter, 5000);
 }
 
 if (document.readyState === 'loading') {
