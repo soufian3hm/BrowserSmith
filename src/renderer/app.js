@@ -244,7 +244,9 @@ async function ask(wv, text, opts) {
   // awaitReply needs the prompt so it can find and skip our own echo. The
   // inner (preload) timeout must be shorter than the outer drive timeout, or
   // the preload's salvage path loses the race and we get a bare timeout.
-  return drive(wv, 'awaitReply', { opts: { timeoutMs: 240000, ...opts, text } }, 260000);
+  // The preload decides completion from ChatGPT's own generating state, so the
+  // outer guard only has to outlast it - never cut a long generation short.
+  return drive(wv, 'awaitReply', { opts: { timeoutMs: 600000, ...opts, text } }, 630000);
 }
 
 /* ------------------------------------------------------------- the loop */
@@ -833,7 +835,7 @@ async function askWithImage(tag, text) {
     await new Promise((r) => setTimeout(r, 500));
     const clicked = await drive(wv, 'clickSend', {}, 8000);
     if (!clicked) await tabs.enter(id);
-    return await drive(wv, 'awaitReply', { opts: { text, quietMs: 6000, timeoutMs: 280000 } }, 300000);
+    return await drive(wv, 'awaitReply', { opts: { text, quietMs: 6000, timeoutMs: 600000 } }, 630000);
   } finally {
     markBusy(tag, false);
   }

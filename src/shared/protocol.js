@@ -362,6 +362,21 @@ function rejectReason(body) {
   if (/Output only the complete contents of/i.test(t)) return 'echoed our prompt';
   if (/^PATH:/im.test(t) && /^REQUEST:/im.test(t)) return 'echoed the prompt header';
   if (/^(REVIEW|REQUEST|WRITTEN SO FAR)$/im.test(t)) return 'echoed a protocol tag';
+
+  // A reply captured mid-stream ends in the middle of a construct. Catching it
+  // here means the reviewer is never asked to judge half a file - it costs one
+  // rebuild instead of a wasted review round plus a RETRY.
+  const unbalanced = (open, close) => {
+    const o = (t.match(open) || []).length;
+    const c = (t.match(close) || []).length;
+    return o > c;
+  };
+  if (unbalanced(/<script\b/gi, /<\/script>/gi)) return 'truncated: unclosed <script>';
+  if (unbalanced(/<style\b/gi, /<\/style>/gi)) return 'truncated: unclosed <style>';
+  if (/<html\b/i.test(t) && !/<\/html>/i.test(t)) return 'truncated: unclosed <html>';
+  const braces = (t.match(/\{/g) || []).length - (t.match(/\}/g) || []).length;
+  if (braces > 2) return `truncated: ${braces} unclosed braces`;
+
   return null;
 }
 

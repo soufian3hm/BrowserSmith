@@ -601,12 +601,17 @@ function afterEcho(text, full) {
  * away we trust a much shorter quiet period. If we never see it at all (missing
  * testid, reply finished between polls) the original timing still decides.
  */
+/** No output change for this long while still generating means the tab is wedged. */
+const STUCK_MS = 300000;
+
 async function awaitReply(opts = {}) {
   const text = opts.text || '';
   // Reasoning can sit on an unchanged status line for seconds at a time, so
   // "quiet" has to be longer than the gap between its steps.
   const quietMs = opts.quietMs ?? 5000;
-  const timeoutMs = opts.timeoutMs ?? 300000;
+  // Long files legitimately take minutes; the generating state decides when
+  // we are done, this is only a backstop against a dead tab.
+  const timeoutMs = opts.timeoutMs ?? 600000;
   const before = state.before ?? '';
   const started = Date.now();
 
@@ -618,7 +623,8 @@ async function awaitReply(opts = {}) {
     await sleep(250);
   }
 
-  // 2. Wait for content after the echo to appear, settle, and not be a placeholder.
+  // 2. Wait for the answer, using the UI's own generating state as the
+  //    authority rather than a stopwatch.
   let lastDelta = null;
   let lastChange = Date.now();
   let sawGenerating = false;
@@ -629,7 +635,13 @@ async function awaitReply(opts = {}) {
     // Sample the stop button every tick, not only once content is stable:
     // a fast reply can start and finish between two lazy checks, and never
     // "seeing" generation is what forces the slow no-signal quiet window.
-    if (isGenerating()) sawGenerating = true;
+    const generating = isGenerating();
+    if (generating) {
+      sawGenerating = true;
+      idleTicks = 0;
+    } else {
+      idleTicks++;
+    }
     const full = transcript();
 
     let delta = echoSeen ? afterEcho(text, full) : null;
@@ -656,26 +668,35 @@ async function awaitReply(opts = {}) {
       lastChange = Date.now();
       continue;
     }
+
+    // While the UI says it is still generating there is nothing to decide:
+    // never hand back a half-written answer. Long code blocks render into a
+    // <pre> whose text does not grow tick by tick, so the transcript can sit
+    // unchanged for tens of seconds mid-stream - an earlier "stalled while
+    // generating" escape hatch fired there and handed the reviewer 2518 chars
+    // of an unfinished file. Only a stall long enough to mean the tab is
+    // genuinely wedged breaks out.
+    if (generating) {
+      if (Date.now() - lastChange > STUCK_MS) {
+        throw new Error('generation stalled - no output change in 5 minutes');
+      }
+      continue;
+    }
+
     if (!meaningful) continue;
 
     const stableFor = Date.now() - lastChange;
-    if (isGenerating()) {
-      idleTicks = 0;
-      // A stop button that never disappears - or one that turns out not to be
-      // about generation at all - must not cost us the entire timeout, so we
-      // still give up on it once the answer has been unchanged for far longer
-      // than any stream ever pauses.
-      if (stableFor > Math.max(quietMs * 3, 20000)) return meaningful;
-      continue;
+    if (sawGenerating) {
+      // We watched a real generation cycle begin and end. The stop button
+      // flickers between tokens, so require it gone for several consecutive
+      // polls as well as the content holding still.
+      if (idleTicks >= 5 && stableFor > 1500) return meaningful;
+    } else if (stableFor > Math.max(quietMs, 12000)) {
+      // We never saw the stop button at all - a missing testid, or a reply
+      // that finished between polls. With no UI signal to trust, wait far
+      // longer before believing the text has stopped growing.
+      return meaningful;
     }
-    // The stop button is a strong end-of-stream signal but not an instant one:
-    // it flickers between tokens, and a 600ms settle on a single absent sample
-    // truncated a 6400-char reply to 617 and turned a "RETRY" verdict into
-    // "RE". Require it to stay gone for several consecutive polls as well as
-    // the content holding still.
-    idleTicks++;
-    const quiet = sawGenerating ? 1500 : quietMs;
-    if (stableFor > quiet && idleTicks >= 5) return meaningful;
   }
 
   if (lastDelta) return lastDelta;
