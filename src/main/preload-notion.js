@@ -18,7 +18,7 @@ const state = {
 
 /** Names Notion currently exposes; used to recognise the model dropdown. */
 const MODEL_HINT =
-  /\b(claude|opus|sonnet|haiku|gpt|o\d|gemini|llama|mistral|deepseek|grok|notion ai|auto|default)\b/i;
+  /\b(claude|opus|sonnet|haiku|fable|gpt|o\d|gemini|llama|mistral|mixtral|deepseek|grok|kimi|glm|qwen|nova|command|notion ai|auto|default)\b/i;
 
 /* ------------------------------------------------------------------ utils */
 
@@ -223,16 +223,23 @@ function findModelTrigger() {
   }
   const composer = findComposer();
   if (!composer) return null;
-  // Climb a few levels to the composer's toolbar container.
-  let scope = composer;
-  for (let i = 0; i < 4 && scope.parentElement; i++) scope = scope.parentElement;
+  const cr = composer.getBoundingClientRect();
 
-  const buttons = [...scope.querySelectorAll('button, [role="button"], [role="combobox"]')]
+  // Locate it by position, not by DOM depth: the toolbar's nesting changes with
+  // viewport size (it sits deeper when a tab is only a quarter of the window),
+  // which silently broke an earlier ancestor-climbing version of this.
+  const buttons = [
+    ...document.querySelectorAll('button, [role="button"], [role="combobox"]'),
+  ]
     .filter(visible)
     .filter((b) => {
+      const r = b.getBoundingClientRect();
+      const nearComposer = r.top < cr.bottom + 80 && r.bottom > cr.top - 80;
       const t = (b.textContent || '').trim();
-      return t.length > 0 && t.length < 40 && MODEL_HINT.test(t);
-    });
+      return nearComposer && t.length > 0 && t.length < 40 && MODEL_HINT.test(t);
+    })
+    .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+
   return buttons[0] || null;
 }
 
@@ -252,12 +259,24 @@ async function listModels() {
   const current = (trigger.textContent || '').trim();
 
   trigger.click();
-  let items = [];
-  for (let i = 0; i < 20 && !items.length; i++) {
-    await sleep(100);
-    items = openMenuItems();
+
+  // Wait for menu items that actually have text. Waiting only for the items to
+  // exist wins the race too early: they mount before their labels render, so we
+  // read a list of empty strings and conclude there are no models.
+  let labels = [];
+  for (let i = 0; i < 40; i++) {
+    await sleep(150);
+    labels = openMenuItems()
+      .map((it) => it.label)
+      .filter((l) => l && MODEL_HINT.test(l));
+    if (labels.length >= 2) {
+      await sleep(250); // let the rest of the list paint
+      labels = openMenuItems()
+        .map((it) => it.label)
+        .filter((l) => l && MODEL_HINT.test(l));
+      break;
+    }
   }
-  const labels = items.map((i) => i.label).filter((l) => l && MODEL_HINT.test(l));
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await sleep(150);
   return { current, models: [...new Set(labels)] };
@@ -343,7 +362,7 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
  * early runs return junk, so they are filtered and they do not count as output.
  */
 const PLACEHOLDER =
-  /^(generating|thinking|searching|working|loading|writing file|reading file|creating|analyz\w*|planning|browsing|running|loaded [\w\s]*tools?|using [\w\s]*tool|alpha|…|\.{3})[\s.…]*$/i;
+  /^(generating|thinking|searching|working|loading|writing file|reading file|creating|crafting|drafting|composing|reviewing|preparing|analyz\w*|planning|browsing|running|loaded [\w\s]*tools?|using [\w\s]*tool|alpha|…|\.{3})[\s.…]*$/i;
 
 /**
  * Everything after the echo of our own prompt.
@@ -418,6 +437,36 @@ async function awaitReply(opts = {}) {
 
   if (lastDelta) return lastDelta;
   throw new Error('no response detected before timeout');
+}
+
+/** Diagnostic: open the model menu and report what the DOM actually contains. */
+async function dumpMenu() {
+  const trigger = findModelTrigger();
+  if (!trigger) return { error: 'no model trigger found' };
+  const label = (trigger.textContent || '').trim();
+  trigger.click();
+  await sleep(1500);
+
+  const q = (s) => document.querySelectorAll(s).length;
+  const pool = [
+    ...document.querySelectorAll(
+      '[role="menu"] *, [role="listbox"] *, [role="dialog"] *, [data-overlay] *'
+    ),
+  ];
+  const sample = pool
+    .map((e) => (e.innerText || '').trim().split('\n')[0])
+    .filter((t) => t && t.length < 32);
+
+  const out = {
+    trigger: label,
+    menuitem: q('[role="menuitem"]'),
+    option: q('[role="option"]'),
+    radio: q('[role="menuitemradio"]'),
+    containers: q('[role="menu"], [role="listbox"], [role="dialog"]'),
+    sample: [...new Set(sample)].slice(0, 30),
+  };
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  return out;
 }
 
 /** Empty the composer without sending. */
@@ -518,6 +567,30 @@ async function ask(text, opts = {}) {
   return delta.trim();
 }
 
+/* -------------------------------------------------------------- new chat */
+
+/**
+ * Start a fresh conversation. Long transcripts get virtualized by Notion -
+ * old messages unmount as new ones stream - which blinds the growth-based
+ * reply detector. Rotating to a new chat resets that cleanly.
+ */
+async function newChat() {
+  const btn = [...document.querySelectorAll('button, [role="button"], a[href]')].find((b) => {
+    const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
+    return /\bnew (chat|conversation)\b/i.test(label);
+  });
+  if (!btn) throw new Error('New chat button not found');
+  btn.click();
+  // The click may navigate; the fresh chat's composer mounts noticeably later.
+  // Returning before it exists made the very next prompt land nowhere.
+  for (let i = 0; i < 40; i++) {
+    await sleep(250);
+    const c = findComposer();
+    if (c && transcript().length < 2000) return { chars: transcript().length };
+  }
+  throw new Error('new chat did not produce a usable composer');
+}
+
 /* ------------------------------------------------------------- self test */
 
 /**
@@ -607,12 +680,15 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
     else if (cmd === 'awaitReply') result = await awaitReply(args.opts);
     else if (cmd === 'dumpButtons') result = dumpButtons();
     else if (cmd === 'clearComposer') result = clearComposer();
+    else if (cmd === 'chars') result = transcript().length;
+    else if (cmd === 'newChat') result = await newChat();
     else if (cmd === 'transcriptTail') {
       // The newest message, for autopilot to read what the user just typed.
       const t = transcript();
       result = t.slice(Math.max(0, t.length - (args.tail || 1200)));
     }
     else if (cmd === 'describeSend') result = describeSend();
+    else if (cmd === 'dumpMenu') result = await dumpMenu();
     else if (cmd === 'pick') startPick(args.which);
     else if (cmd === 'listModels') result = await listModels();
     else if (cmd === 'selectModel') result = await selectModel(args.name);

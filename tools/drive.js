@@ -93,6 +93,27 @@ const CMDS = {
     })()`);
     console.log(v);
   },
+  /** Run a preload command in one tab: drive.js tab a dumpMenu */
+  async tab(which, cmd) {
+    const v = await evaluate(`(async () => {
+      const wv = document.getElementById('tab-${which}');
+      wv.focus();
+      await new Promise(r => setTimeout(r, 800));
+      const id = 700000 + Math.floor(Math.random() * 100000);
+      return new Promise(res => {
+        const h = e => {
+          if (e.channel === 'drive:done' && e.args[0].id === id) {
+            wv.removeEventListener('ipc-message', h);
+            res(JSON.stringify(e.args[0], null, 1));
+          }
+        };
+        wv.addEventListener('ipc-message', h);
+        wv.send('drive', { id, cmd: '${cmd}', args: {} });
+        setTimeout(() => res('TIMEOUT'), 40000);
+      });
+    })()`);
+    console.log(v);
+  },
   async log(n = '80') {
     const v = await evaluate(
       `[...document.querySelectorAll('#log > div')].slice(-${Number(n)}).map(d => d.innerText).join('\\n')`

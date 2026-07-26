@@ -1,73 +1,183 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <title>notioned</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header>
+    <header class="appbar">
       <span class="brand">notioned</span>
-      <button id="btn-run" class="primary">Run</button>
-      <button id="btn-stop" disabled>Stop</button>
-      <button id="btn-autopilot" title="Type once in the left Notion chat; the system finishes on its own">Autopilot</button>
-      <span class="sep"></span>
-      <button id="btn-seed">Seed roles</button>
-      <button id="btn-selftest">Self-test</button>
-      <button id="btn-probe">Probe</button>
-      <details class="menu">
-        <summary>Pick…</summary>
-        <div>
-          <button data-pick="a-composer">A composer</button>
-          <button data-pick="a-send">A send</button>
-          <button data-pick="a-model">A model</button>
-          <button data-pick="a-output">A output</button>
-          <hr />
-          <button data-pick="b-composer">B composer</button>
-          <button data-pick="b-send">B send</button>
-          <button data-pick="b-model">B model</button>
-          <button data-pick="b-output">B output</button>
-        </div>
-      </details>
-      <span class="sep"></span>
-      <span id="login" class="pill out">checking session…</span>
-      <button id="btn-logout" title="Wipe the saved Notion session">Forget login</button>
-      <span id="status">idle</span>
+      <button id="btn-autopilot" aria-pressed="false"
+        title="Type once in the planner tab; the system finishes on its own">Autopilot</button>
+
+      <div class="appbar-right">
+        <span id="status" aria-live="polite">idle</span>
+        <span id="session" class="pill out">checking session&hellip;</span>
+
+        <details id="adv">
+          <summary>Advanced</summary>
+          <div class="menu-panel">
+            <div class="menu-group">
+              <span class="menu-label">Maintenance</span>
+              <div class="menu-row">
+                <button id="btn-selftest" title="Run the built-in diagnostics">Self-test</button>
+                <button id="btn-forget" title="Wipe the saved Notion session">Forget login</button>
+              </div>
+            </div>
+            <div class="menu-group">
+              <span class="menu-label">Element pickers</span>
+              <p class="menu-note">
+                Rescue hatch for when Notion&rsquo;s UI changes. Click a picker, then click the
+                matching element inside that tab to re-teach it.
+              </p>
+              <div class="pick-group">
+                <span class="pick-tab">Tab A &middot; Planner</span>
+                <div class="pick-row">
+                  <button data-pick="a-composer" title="Pick the composer in tab A">Composer</button>
+                  <button data-pick="a-send" title="Pick the send button in tab A">Send</button>
+                  <button data-pick="a-model" title="Pick the model menu in tab A">Model</button>
+                  <button data-pick="a-output" title="Pick the output area in tab A">Output</button>
+                </div>
+              </div>
+              <div class="pick-group">
+                <span class="pick-tab">Tab B &middot; Builder</span>
+                <div class="pick-row">
+                  <button data-pick="b-composer" title="Pick the composer in tab B">Composer</button>
+                  <button data-pick="b-send" title="Pick the send button in tab B">Send</button>
+                  <button data-pick="b-model" title="Pick the model menu in tab B">Model</button>
+                  <button data-pick="b-output" title="Pick the output area in tab B">Output</button>
+                </div>
+              </div>
+              <div class="pick-group">
+                <span class="pick-tab">Tab C &middot; Reviewer</span>
+                <div class="pick-row">
+                  <button data-pick="c-composer" title="Pick the composer in tab C">Composer</button>
+                  <button data-pick="c-send" title="Pick the send button in tab C">Send</button>
+                  <button data-pick="c-model" title="Pick the model menu in tab C">Model</button>
+                  <button data-pick="c-output" title="Pick the output area in tab C">Output</button>
+                </div>
+              </div>
+              <div class="pick-group">
+                <span class="pick-tab">Tab D &middot; Auditor</span>
+                <div class="pick-row">
+                  <button data-pick="d-composer" title="Pick the composer in tab D">Composer</button>
+                  <button data-pick="d-send" title="Pick the send button in tab D">Send</button>
+                  <button data-pick="d-model" title="Pick the model menu in tab D">Model</button>
+                  <button data-pick="d-output" title="Pick the output area in tab D">Output</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
     </header>
 
     <main>
-      <section class="tabs">
-        <div class="tab">
-          <div class="tab-label">
-            <span>TAB A — planner (path + verdict)</span>
-            <select id="model-a" title="Model for tab A"><option value="">model…</option></select>
-            <button class="mini" data-models="a">⟳</button>
+      <section class="work">
+        <div class="viewbar">
+          <div class="seg" role="group" aria-label="Work area view">
+            <button id="btn-view-agents">Agents</button>
+            <button id="btn-view-preview">Preview</button>
           </div>
-          <webview id="tab-a" src="https://app.notion.com/ai" allowpopups></webview>
         </div>
-        <div class="tab">
-          <div class="tab-label">
-            <span>TAB B — builder (file contents)</span>
-            <select id="model-b" title="Model for tab B"><option value="">model…</option></select>
-            <button class="mini" data-models="b">⟳</button>
-          </div>
-          <webview id="tab-b" src="https://app.notion.com/ai" allowpopups></webview>
+
+        <div id="views" data-view="agents">
+          <section class="view view-agents" aria-label="Agent tabs">
+            <div class="tab" data-tab="a">
+              <div class="tab-head">
+                <span class="role">A &middot; Planner</span>
+                <select id="model-a" aria-label="Model for tab A"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="a" aria-label="Reload models for tab A" title="Reload models">&#10227;</button>
+              </div>
+              <webview id="tab-a" src="https://app.notion.com/ai" allowpopups></webview>
+            </div>
+            <div class="tab" data-tab="b">
+              <div class="tab-head">
+                <span class="role">B &middot; Builder</span>
+                <select id="model-b" aria-label="Model for tab B"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="b" aria-label="Reload models for tab B" title="Reload models">&#10227;</button>
+              </div>
+              <webview id="tab-b" src="https://app.notion.com/ai" allowpopups></webview>
+            </div>
+            <div class="tab" data-tab="c">
+              <div class="tab-head">
+                <span class="role">C &middot; Reviewer</span>
+                <select id="model-c" aria-label="Model for tab C"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="c" aria-label="Reload models for tab C" title="Reload models">&#10227;</button>
+              </div>
+              <webview id="tab-c" src="https://app.notion.com/ai" allowpopups></webview>
+            </div>
+            <div class="tab" data-tab="d">
+              <div class="tab-head">
+                <span class="role">D &middot; Auditor</span>
+                <select id="model-d" aria-label="Model for tab D"><option value="">model&hellip;</option></select>
+                <button class="mini" data-models="d" aria-label="Reload models for tab D" title="Reload models">&#10227;</button>
+              </div>
+              <webview id="tab-d" src="https://app.notion.com/ai" allowpopups></webview>
+            </div>
+          </section>
+
+          <section class="view view-preview" aria-label="Live preview">
+            <div class="preview-bar">
+              <span id="preview-url">about:blank</span>
+              <button id="btn-open-external" title="Open the preview in your default browser">Open in browser</button>
+            </div>
+            <webview id="tab-preview" src="about:blank"></webview>
+          </section>
         </div>
       </section>
 
-      <aside>
-        <label class="row">
-          <span>Project</span>
-          <input id="project" placeholder="my-cool-tool" />
-        </label>
-        <textarea id="prompt" placeholder="What should the agents build?
-e.g. a TypeScript debounce utility with tests"></textarea>
-        <label class="row">
-          <span>Max retries</span><input id="retries" type="number" value="2" min="0" max="5" />
-          <span>Max files</span><input id="maxfiles" type="number" value="6" min="1" max="30" />
-        </label>
-        <div class="log" id="log"></div>
-        <div class="files"><b>workspace/</b><ul id="files"></ul></div>
+      <aside class="sidebar">
+        <div class="field-row">
+          <div class="field">
+            <label for="mode">Mode</label>
+            <select id="mode">
+              <option value="auto">Auto-detect</option>
+              <option value="nextjs" selected>Next.js</option>
+              <option value="vite">Vite + React</option>
+              <option value="static">Static HTML</option>
+              <option value="node">Node CLI</option>
+              <option value="python">Python</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="project">Project</label>
+            <input id="project" placeholder="my-cool-tool" spellcheck="false" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt" spellcheck="false"
+            placeholder="Describe what to build. The four agents plan, write, review and audit it &mdash; then it runs."></textarea>
+        </div>
+
+        <div class="actions">
+          <button id="btn-run" class="primary">Run</button>
+          <button id="btn-stop" disabled>Stop</button>
+        </div>
+
+        <select id="model-all" aria-label="Set the model for all tabs"><option value="">All models...</option></select>
+
+        <section class="panel activity">
+          <div class="panel-head">Activity</div>
+          <div id="log" aria-live="polite"></div>
+        </section>
+
+        <section class="panel term">
+          <div class="panel-head">Terminal</div>
+          <div id="terminal"></div>
+          <div class="term-row">
+            <span class="term-prompt" aria-hidden="true">$</span>
+            <input id="term-input" aria-label="Terminal command" spellcheck="false" autocomplete="off" />
+          </div>
+        </section>
+
+        <section class="panel workspace">
+          <div class="panel-head">workspace/</div>
+          <ul id="files"></ul>
+        </section>
       </aside>
     </main>
 

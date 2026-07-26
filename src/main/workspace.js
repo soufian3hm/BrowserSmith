@@ -34,6 +34,13 @@ async function readFile(rel) {
   return fs.readFile(resolveSafe(rel), 'utf8');
 }
 
+// Never descend into these: npm install alone adds tens of thousands of files,
+// and list() runs on every agent round - an unpruned walk turns each round into
+// a multi-second stall plus a huge IPC payload.
+const SKIP_DIRS = new Set([
+  'node_modules', '.next', '.git', '.preview', '.turbo', '.cache', 'dist', 'build', '__pycache__',
+]);
+
 async function list() {
   const out = [];
   async function walk(dir) {
@@ -44,6 +51,7 @@ async function list() {
       return;
     }
     for (const e of entries) {
+      if (e.isDirectory() && SKIP_DIRS.has(e.name)) continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) await walk(p);
       else out.push(path.relative(ROOT, p).replace(/\\/g, '/'));
