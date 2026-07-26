@@ -39,6 +39,36 @@ async function fixture(name, files) {
   return project;
 }
 
+/**
+ * Put a fake executable on PATH for the duration of one test.
+ *
+ * Needed because "the declared packageManager wins" asserted that plan() picks
+ * pnpm - which only held on machines that happen to have pnpm installed. It
+ * passed on the author's laptop and failed on all four CI runners, where
+ * falling back to npm is the correct behaviour, so the test was describing one
+ * machine rather than the rule. Installing the binary the test is talking about
+ * makes it state the rule on any machine.
+ */
+async function withBinaryOnPath(name, fn) {
+  const dir = path.join(workspace.ROOT, `${PREFIX}bin`);
+  await fsp.mkdir(dir, { recursive: true });
+  // .cmd is what a Windows package-manager shim really is, and PATHEXT lists it;
+  // on POSIX the executable bit is the half of the question that matters.
+  const file = path.join(dir, process.platform === 'win32' ? `${name}.cmd` : name);
+  await fsp.writeFile(file, '', { mode: 0o755 });
+  const saved = process.env.PATH;
+  process.env.PATH = dir + path.delimiter + saved;
+  // The probe memoises per session, and earlier tests have already asked about
+  // this name on the real machine.
+  toolchain.resetProbeCache();
+  try {
+    return await fn();
+  } finally {
+    process.env.PATH = saved;
+    toolchain.resetProbeCache();
+  }
+}
+
 test.after(async () => {
   const entries = await fsp.readdir(workspace.ROOT).catch(() => []);
   await Promise.all(
@@ -183,10 +213,30 @@ test('plan: the declared packageManager wins over npm', async () => {
       dependencies: { vite: '^6' },
     }),
   });
+  await withBinaryOnPath('pnpm', async () => {
+    const pl = await toolchain.plan(project);
+    assert.equal(pl.serve.cmd, 'pnpm');
+    assert.deepEqual(pl.serve.args, ['run', 'start']);
+    assert.equal(pl.steps[0].cmd, 'pnpm');
+  });
+});
+
+test('plan: a declared packageManager that is not installed falls back to npm', async () => {
+  // The other half of the rule, and the one CI actually exercised: honouring
+  // `packageManager: pnpm@9` on a machine with no pnpm would plan a run that
+  // cannot start. npm is present wherever node is.
+  const project = await fixture('pnpm-absent', {
+    'package.json': JSON.stringify({
+      name: 'x',
+      packageManager: 'pnpm@9.0.0',
+      scripts: { start: 'vite' },
+      dependencies: { vite: '^6' },
+    }),
+  });
   const pl = await toolchain.plan(project);
-  assert.equal(pl.serve.cmd, 'pnpm');
+  if (toolchain.hasBinary('pnpm')) return; // this machine has it; nothing to assert
+  assert.equal(pl.serve.cmd, 'npm');
   assert.deepEqual(pl.serve.args, ['run', 'start']);
-  assert.equal(pl.steps[0].cmd, 'pnpm');
 });
 
 test('plan: a dev script beats a stray script in another language', async () => {

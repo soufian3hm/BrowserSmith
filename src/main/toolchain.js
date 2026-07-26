@@ -13,6 +13,10 @@ const net = require('node:net');
 const { BrowserWindow, nativeImage, clipboard } = require('electron');
 const path = require('node:path');
 const fsp = require('node:fs/promises');
+// Sync fs alongside the promises API: PATH probing answers a question asked from
+// inside synchronous planning code, and awaiting it would spread async through
+// every RUNTIMES entry for a handful of stat calls.
+const fs = require('node:fs');
 const workspace = require('./workspace');
 
 const IS_WIN = process.platform === 'win32';
@@ -999,22 +1003,59 @@ const SERVER_RE = new RegExp(
   'i'
 );
 
-/** Executable availability, resolved once per session. */
+/**
+ * Is this executable on PATH?
+ *
+ * This walks PATH itself rather than spawning `where`/`which`, because the
+ * subprocess version reported node as MISSING on a machine that had it: the
+ * probe carried a 4s timeout, a cold Windows runner took longer than that to
+ * answer, and spawnSync then returned status null. A null status is not a
+ * non-zero exit - it is no answer at all - but `status === 0` collapsed the two,
+ * and the false negative was memoised for the rest of the session. The app went
+ * on to tell the user their Node project could not run.
+ *
+ * Walking PATH is what where/which do anyway, minus the process, the timeout and
+ * that whole failure mode. isFile() matters: a directory called `node` on PATH
+ * exists without being runnable, and the executable bit is the POSIX half of the
+ * same question.
+ */
+function onPath(cmd) {
+  const exts = IS_WIN ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';') : [''];
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const full = path.join(dir, cmd + ext);
+      try {
+        if (!fs.statSync(full).isFile()) continue;
+        if (!IS_WIN) fs.accessSync(full, fs.constants.X_OK);
+        return true;
+      } catch {
+        /* not here, or not readable - keep looking */
+      }
+    }
+  }
+  return false;
+}
+
+/** Executable availability, memoised per session. */
 const binCache = new Map();
 function hasBinary(cmd) {
   if (binCache.has(cmd)) return binCache.get(cmd);
-  let ok;
-  try {
-    const probe = require('node:child_process').spawnSync(IS_WIN ? 'where' : 'which', [cmd], {
-      windowsHide: true,
-      timeout: 4000,
-    });
-    ok = probe.status === 0;
-  } catch {
-    ok = false;
-  }
+  const ok = onPath(cmd);
   binCache.set(cmd, ok);
   return ok;
+}
+
+/**
+ * Forget what was probed, so the next question re-reads the machine.
+ *
+ * A session outlives the user installing a runtime: someone told "python is not
+ * installed" installs it and asks again, and a cache that answered once would
+ * keep repeating the stale no for as long as the app stays open.
+ */
+function resetProbeCache() {
+  binCache.clear();
+  moduleCache.clear();
 }
 
 /** First binary in the list that exists on this machine. */
@@ -2282,5 +2323,7 @@ module.exports = {
   freePort,
   validateArgv,
   parseDotEnv,
+  hasBinary,
+  resetProbeCache,
   ALLOWED,
 };
