@@ -217,17 +217,18 @@ test('inferMode reads the stack out of the request text', () => {
   assert.equal(p.inferMode('node script to parse logs'), 'node');
   assert.equal(p.inferMode('a single html landing page'), 'static');
 
-  // Tie-breaks: something to look at is static, anything else is node.
-  assert.equal(p.inferMode('hill climb racing game'), 'static');
-  assert.equal(p.inferMode('a dashboard showing sales'), 'static');
-  assert.equal(p.inferMode('rename every file in a folder'), 'node');
-  assert.equal(p.inferMode(''), 'node');
+  // With no explicit stack signal it must NOT guess. Picking a mode here is
+  // how "build me a search engine" became a single index.html: the planner
+  // never got to choose, a regex chose for it.
+  assert.equal(p.inferMode('hill climb racing game'), 'auto');
+  assert.equal(p.inferMode('a dashboard showing sales'), 'auto');
+  assert.equal(p.inferMode('rename every file in a folder'), 'auto');
+  assert.equal(p.inferMode('a standalone web search engine with image and video tabs'), 'auto');
+  assert.equal(p.inferMode(''), 'auto');
 
-  // Whatever it returns must be a real mode, and never auto.
+  // Whatever it returns must still be a real mode.
   for (const req of ['x', 'a game', 'next js', 'flask', '', null]) {
-    const key = p.inferMode(req);
-    assert.ok(p.MODES[key], `inferMode returned an unknown mode: ${key}`);
-    assert.notEqual(key, 'auto');
+    assert.ok(p.MODES[p.inferMode(req)], `inferMode returned an unknown mode`);
   }
 });
 

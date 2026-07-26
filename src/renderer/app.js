@@ -604,22 +604,40 @@ async function runProject(request) {
       if (round === 2) break; // two fix rounds spent
 
       const fix = preview.detail || `${preview.stage} failed`;
-      log(`fixing: ${fix}`, 'err');
+      log(`fixing: ${fix.split('\n')[0]}`, 'err');
+
+      // A stack trace names the file and line, so try a surgical patch before
+      // regenerating the whole file - a 48KB rewrite to fix one loop wastes a
+      // full generation and risks breaking everything that already worked.
+      const patched = await tryPatch(project, fix);
+      if (patched) {
+        if (!written.includes(patched)) written.push(patched);
+        continue;
+      }
+
       status('planner: fixing');
       const fixReply = await askForPath(
         `The project was built and run. It did not pass.\n` +
-          `PROBLEM: ${fix}\n\nReply with the ONE file path to rewrite to fix this.`
+          `PROBLEM: ${condense(fix, 1200)}\n\nReply with the ONE file path to rewrite to fix this.`
       );
       const fixPath = protocol.parsePath(fixReply);
       if (!fixPath || fixPath === 'DONE') break;
-      const res = await buildFile(project, fixPath, `${request}\n\nFIX REQUIRED: ${fix}`, mode);
+      const res = await buildFile(
+        project,
+        fixPath,
+        `${request}\n\nFIX REQUIRED: ${condense(fix, 1200)}`,
+        mode
+      );
       if (!res) break;
       if (!written.includes(fixPath)) written.push(fixPath);
     }
 
     // Passing or not, if we know where the project is running, show it. The
     // server stays up for the user - the next run (or quitting) stops it.
-    if (mode.previews === 'browser' && preview && preview.url) showPreview(preview.url);
+    // If there is a URL there is something to look at, whatever the mode said.
+    // Gating this on mode.previews hid the page a Python or Node server was
+    // serving, purely because the mode had been labelled a "run" mode.
+    if (preview && preview.url) showPreview(preview.url);
   }
 
   const verdict = preview?.skipped
@@ -629,6 +647,71 @@ async function runProject(request) {
       : 'not verified';
   log(`project done — ${written.length} file(s) in workspace/${project}/ — ${verdict}`, 'ok');
   return { project, written, preview };
+}
+
+/* --------------------------------------------------------------- patching */
+
+/**
+ * Fix the broken lines instead of rewriting the file.
+ *
+ * Returns the patched path on success, or null to fall back to a full rewrite.
+ * Falling back is the normal, expected outcome whenever the error does not
+ * name a location or the builder cannot express the fix as a patch - a wrong
+ * patch silently corrupts a file, so anything uncertain declines.
+ */
+async function tryPatch(project, errorText) {
+  const patch = window.buildgpt.patch;
+  if (!patch) return null;
+
+  const loc = patch.parseErrorLocation(errorText);
+  if (!loc) return null;
+
+  let source;
+  try {
+    source = await fs.read(`${project}/${loc.file}`);
+  } catch {
+    return null; // the trace names a file we did not write
+  }
+
+  log(`patching ${loc.file}:${loc.line} instead of rewriting it`, 'ok');
+  status(`${ROLES.builder.toUpperCase()}: patching ${loc.file}`);
+
+  let reply;
+  try {
+    reply = await askRole(
+      ROLES.builder,
+      `This file is throwing an error at line ${loc.line}.\n\n` +
+        `ERROR:\n${condense(errorText, 800)}\n\n` +
+        `FILE (${loc.file}), lines around the error:\n${patch.excerpt(source, loc.line)}\n\n` +
+        patch.PATCH_FORMAT
+    );
+  } catch (e) {
+    log(`patch attempt failed (${e.message}) — rewriting instead`, 'err');
+    return null;
+  }
+
+  if (patch.wantsRewrite(reply)) {
+    log('builder says this needs a rewrite, not a patch', 'err');
+    return null;
+  }
+
+  const patches = patch.parsePatches(reply);
+  if (!patches.length) {
+    log('no usable patch in the reply — rewriting instead', 'err');
+    return null;
+  }
+
+  const { text, applied, failed } = patch.applyPatches(source, patches);
+  if (!applied.length) {
+    log(`patch did not apply (${failed[0]?.reason || 'no match'}) — rewriting instead`, 'err');
+    return null;
+  }
+  if (failed.length) log(`${failed.length} of ${patches.length} hunks did not apply`, 'err');
+
+  const res = await fs.write(`${project}/${loc.file}`, text);
+  log(`patched ${applied.length} hunk(s) in ${loc.file} (${res.bytes} bytes)`, 'ok');
+  await refreshFiles();
+  return loc.file;
 }
 
 /* ------------------------------------------------------- build & preview */
@@ -650,8 +733,178 @@ function tailLines(text, n = 25) {
  * modes), then have the QA tab judge the result against the request.
  */
 async function verifyProject(project, request, mode) {
-  if (mode.previews === 'run') return verifyByRunning(project, request, mode);
-  return verifyInBrowser(project, request, mode);
+  // How to verify comes from what is ON DISK, not from the mode the user
+  // picked. A Python backend serving an HTML frontend is both a "run" and a
+  // "browser" project; forcing one strategy up front made it unverifiable and
+  // told the auditor a definition of done that could not be satisfied.
+  let p = null;
+  try {
+    p = await tool.plan(project);
+  } catch (e) {
+    log(`plan failed (${e.message}) — falling back to the mode`, 'err');
+  }
+  if (!p) {
+    return mode.previews === 'run'
+      ? verifyByRunning(project, request, mode)
+      : verifyInBrowser(project, request, mode);
+  }
+
+  log(`plan: ${p.kind} — ${p.why}`, 'ok');
+  if (p.unavailable) {
+    log(`${p.unavailable} is not installed — checking the files, not running them`, 'err');
+  }
+  return verifyByPlan(project, request, p);
+}
+
+/**
+ * Run a project according to its plan: install, then either serve-and-look or
+ * run-and-read, and for a script that also emits a page, both.
+ */
+async function verifyByPlan(project, request, p) {
+  await tool.stop(project).catch(() => {});
+
+  for (const step of p.steps || []) {
+    if (abort) throw new Error('stopped');
+    status(`${step.cmd} ${step.args.join(' ')}`);
+    log(`${step.cmd} ${step.args.join(' ')}…`);
+    let res;
+    try {
+      res = await tool.run(project, step.cmd, step.args, step.timeoutMs || 300000);
+    } catch (e) {
+      if (step.optional) { log(`${step.cmd} unavailable (${e.message}) — continuing`, 'err'); continue; }
+      return { ok: false, stage: 'install', detail: e.message };
+    }
+    if (res.code !== 0) {
+      const tail = tailLines(res.out, 20);
+      if (step.optional) { log(`${step.cmd} failed (non-fatal), continuing`, 'err'); continue; }
+      return { ok: false, stage: 'install', detail: `${step.cmd} failed:\n${tail}` };
+    }
+    log(`${step.cmd} ok`, 'ok');
+  }
+
+  let url = null;
+  let runOutput = '';
+
+  if (p.serve) {
+    status(p.serve.label);
+    log(`starting: ${p.serve.label}…`);
+    try {
+      const srv = await tool.serveCmd(project, p.serve.cmd, p.serve.args);
+      url = srv.url;
+      log(`server up at ${url}`, 'ok');
+    } catch (e) {
+      const errs = await serverErrorText(project);
+      return { ok: false, stage: 'serve', detail: `${e.message}${errs ? '\n' + errs : ''}` };
+    }
+  } else if (p.run) {
+    status(p.run.label);
+    log(`running: ${p.run.label}…`);
+    try {
+      const res = await tool.run(project, p.run.cmd, p.run.args, p.run.timeoutMs || 120000);
+      runOutput = tailLines(res.out, 30) || '(no output)';
+      const note = res.timedOut ? 'timed out' : `exit code ${res.code}`;
+      log(`finished — ${note}`, res.code === 0 ? 'ok' : 'err');
+      termLine(runOutput);
+      if (res.code !== 0) {
+        return { ok: false, stage: 'run', detail: `${note}\n${runOutput}` };
+      }
+    } catch (e) {
+      return { ok: false, stage: 'run', detail: e.message };
+    }
+  }
+
+  // A script that also produced a page still deserves a look.
+  if (!url && p.preview !== 'none' && p.htmlEntry) {
+    url = 'file:///' + (await fs.root()).replace(/\\/g, '/') + `/${project}/${p.htmlEntry}`;
+    log(`previewing ${p.htmlEntry}`, 'ok');
+  }
+
+  if (!url) {
+    // Nothing to look at: judge the output text instead.
+    if (!runOutput) return { ok: true, skipped: true };
+    return judgeText(project, request, p, runOutput);
+  }
+
+  return judgePage(project, request, p, url, runOutput);
+}
+
+/** Dev-server compile errors, if the bridge exposes them. */
+async function serverErrorText(project) {
+  try {
+    return tool.serverErrors ? await tool.serverErrors(project) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Screenshot a running page and have the QA tab judge it.
+ *
+ * The screenshot is taken AFTER the harness clicks and presses Enter/Space/W,
+ * so a game is past its title screen; and the framework's error overlay is read
+ * out of its shadow DOM, so a failure comes back as a real stack trace rather
+ * than "it shows an error".
+ */
+async function judgePage(project, request, p, url, runOutput) {
+  let shot, verdict;
+  try {
+    status('screenshotting');
+    shot = await tool.screenshot(project, url);
+    log(`screenshot ${Math.round(shot.bytes / 1024)}KB — "${shot.title || 'untitled'}"`, 'ok');
+    await refreshFiles();
+
+    const diagnostics = [shot.diagnostics || '', await serverErrorText(project)]
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 2500);
+    if (diagnostics) log(`errors on the page: ${diagnostics.split('\n')[0]}`, 'err');
+
+    const drove = (shot.interactions || []).join('; ');
+    status(`${QA.toUpperCase()}: judging the preview`);
+    verdict = await askWithImage(
+      QA,
+      `Screenshot of the running project at ${url}.\n` +
+        `REQUEST: ${request}\n` +
+        (drove ? `The harness already ${drove}, so this is the app in use.\n` : '') +
+        (runOutput ? `Program output:\n${runOutput}\n` : '') +
+        (diagnostics ? `Errors detected on the page:\n${diagnostics}\n` : '') +
+        `\nDoes this look like a working result for the request?\n` +
+        `A title screen, menu or landing state is a PASS - you do not need to see it mid-use.\n` +
+        `Reply FIX only if something is genuinely broken: an error overlay, a blank page, ` +
+        `an obviously unstyled mess, or the wrong app entirely.\n` +
+        `Reply PASS, or FIX followed by one short line.`
+    );
+    log(`verdict: ${verdict.slice(0, 160)}`, 'a');
+
+    const { pass, detail } = await parsePassFix(verdict);
+    return {
+      ok: pass,
+      stage: 'preview',
+      url,
+      shot: shot.file,
+      // The real error beats the model's description of it every time.
+      detail: pass ? null : (diagnostics || detail),
+      diagnostics,
+    };
+  } catch (e) {
+    log(`preview check failed: ${e.message}`, 'err');
+    return { ok: false, stage: 'screenshot', url, detail: e.message };
+  }
+}
+
+/** No page to look at: judge what the program printed. */
+async function judgeText(project, request, p, output) {
+  status(`${QA.toUpperCase()}: judging the output`);
+  const verdict = await askRole(
+    QA,
+    `The project was run with: ${p.run ? p.run.label : 'its entry point'}\n` +
+      `OUTPUT:\n${output}\n\nREQUEST: ${request}\n\n` +
+      `Does this output satisfy the request? Be generous - if it clearly works, say PASS.\n` +
+      `Reply PASS, or FIX followed by one short line.`
+  );
+  log(`verdict: ${verdict.slice(0, 160)}`, 'a');
+  const { pass, detail } = await parsePassFix(verdict);
+  return { ok: pass, stage: 'run', url: null, detail };
 }
 
 /** Browser modes: install, serve (or static file), screenshot, judge. */

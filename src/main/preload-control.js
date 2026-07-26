@@ -9,6 +9,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const protocol = require('../shared/protocol');
+const patch = require('../shared/patch');
 const { SITE } = require('../shared/site');
 
 // The webview preload sits beside this file and is named after the site key,
@@ -80,9 +81,23 @@ const api = {
       ipcRenderer.invoke('tool:screenshot', { project, url }),
     inspect: (project) => ipcRenderer.invoke('tool:inspect', { project }),
     staticEntry: (project) => ipcRenderer.invoke('tool:staticEntry', { project }),
+    plan: (project) => ipcRenderer.invoke('tool:plan', { project }),
+    serveCmd: (project, cmd, args) =>
+      ipcRenderer.invoke('tool:serveCmd', { project, cmd, args }),
+    serverErrors: (project) => ipcRenderer.invoke('tool:serverErrors', { project }),
     scaffold: (project, modeKey) =>
       ipcRenderer.invoke('tool:scaffold', { project, modeKey }),
     onOutput: (cb) => ipcRenderer.on('tool:output', (_e, p) => cb(p)),
+  },
+
+  // Surgical find/replace fixes: pure functions, no IPC needed.
+  patch: {
+    PATCH_FORMAT: patch.PATCH_FORMAT,
+    parsePatches: (reply) => patch.parsePatches(reply),
+    wantsRewrite: (reply) => patch.wantsRewrite(reply),
+    applyPatches: (source, patches) => patch.applyPatches(source, patches),
+    parseErrorLocation: (text) => patch.parseErrorLocation(text),
+    excerpt: (source, line, radius) => patch.excerpt(source, line, radius),
   },
 
   // Human-typed terminal only; the empty string means the workspace root.

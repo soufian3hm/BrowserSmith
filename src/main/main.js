@@ -162,6 +162,11 @@ app.whenReady().then(async () => {
     toolchain.screenshot(project, url)
   );
   ipcMain.handle('tool:inspect', (_e, { project }) => toolchain.inspect(project));
+  ipcMain.handle('tool:plan', (_e, { project }) => toolchain.plan(project));
+  ipcMain.handle('tool:serveCmd', (_e, { project, cmd, args }) =>
+    toolchain.startProcessServer(mainWin(), project, cmd, args)
+  );
+  ipcMain.handle('tool:serverErrors', (_e, { project }) => toolchain.serverErrors(project));
   ipcMain.handle('tool:staticEntry', (_e, { project }) => toolchain.findStaticEntry(project));
   ipcMain.handle('tool:scaffold', (_e, { project, modeKey }) =>
     toolchain.scaffold(project, modeKey)

@@ -28,8 +28,8 @@ const MODES = {
     devScript: null,
     previews: 'browser',
     hint:
-      'No fixed framework - use the simplest stack that satisfies the request; ' +
-      'when in doubt, one self-contained index.html at the project root.',
+      'No fixed framework and no default. YOU choose the stack that genuinely ' +
+      'fits this request - any language, any runtime, any number of files.',
   },
   nextjs: {
     key: 'nextjs',
@@ -71,8 +71,8 @@ const MODES = {
     devScript: null,
     previews: 'run',
     hint:
-      'Plain Node.js (CommonJS) run as `node index.js`: entry index.js at the ' +
-      'project root, Node core modules only, no npm installs.',
+      'Node.js (CommonJS) run as `node index.js`: entry index.js at the ' +
+      'project root; declare any dependency in package.json.',
   },
   python: {
     key: 'python',
@@ -81,18 +81,23 @@ const MODES = {
     devScript: null,
     previews: 'run',
     hint:
-      'Python 3 run as `python main.py`: entry main.py at the project root, ' +
-      'standard library only, no pip installs.',
+      'Python 3 run as `python main.py`: entry main.py at the project root; ' +
+      'list any dependency in requirements.txt.',
   },
 };
 
 /** Fuller per-mode conventions woven into the role prompts. */
 const CONVENTIONS = {
   auto:
-    'No framework is fixed. Infer the simplest stack that fully satisfies the ' +
-    'request - for anything visual prefer a single self-contained index.html ' +
-    'with inline CSS and JS and no build step; add more files only when the ' +
-    'request clearly needs them.',
+    'No framework, language or file layout is fixed, and there is no default ' +
+    'to fall back on. Decide what this request actually needs and build that: ' +
+    'a Python service, a Go binary, a Node CLI, a multi-file web app, a single ' +
+    'HTML page - whatever genuinely fits. Choose the stack a competent engineer ' +
+    'would choose for this specific problem, structure it in as many files as ' +
+    'that stack normally uses, and do not reach for a self-contained HTML page ' +
+    'unless the request really is a static page. If it needs a server, write a ' +
+    'server. If it needs to crawl or process data, write real code in a ' +
+    'language suited to that. The runner detects and runs whatever you produce.',
   nextjs:
     'This is a Next.js App Router project in TypeScript. Routes live under ' +
     'app/: app/page.tsx is the home page, app/layout.tsx the root layout, ' +
@@ -100,36 +105,40 @@ const CONVENTIONS = {
     'imported with relative paths unless the existing tsconfig defines an ' +
     'alias. The scaffold (package.json, tsconfig.json, next config, ' +
     'app/layout.tsx, app/page.tsx, app/globals.css) already exists on disk. ' +
-    'Use only react and next - no extra npm packages. Any component using ' +
+    'Prefer react and next alone, but declare any package you genuinely need ' +
+    'in package.json - dependencies are installed before the app runs. Any component using ' +
     'hooks or event handlers needs "use client" as its first line.',
   vite:
     'This is a Vite project. index.html at the project root is the entry page ' +
     'and loads the main module from src/ with <script type="module">. All ' +
     'source lives under src/; styles are src/*.css files imported from the ' +
     'code. The scaffold (package.json, index.html, the src/ entry) already ' +
-    'exists on disk. No npm packages beyond what the scaffold provides.',
+    'exists on disk. Declare any package you genuinely need in package.json - ' +
+    'dependencies are installed before the app runs.',
   static:
     'This is a plain static site with no build step and no server: index.html ' +
     'at the project root, optional styles.css and script.js referenced with ' +
     'relative paths. Everything must work when index.html is opened straight ' +
     'from disk - no npm packages, no bundler, no external CDNs.',
   node:
-    'This is a plain Node.js project. The entry point is index.js at the ' +
-    'project root and the whole program must run with `node index.js` using ' +
-    'only Node core modules (CommonJS require) - no npm installs. Split logic ' +
-    'into small local modules such as lib/*.js when it grows.',
+    'This is a Node.js project. The entry point is index.js at the project ' +
+    'root and it must run with `node index.js` (CommonJS require). Prefer Node ' +
+    'core modules so it runs with no install step, but if the task genuinely ' +
+    'needs a package, declare it in package.json - dependencies are installed ' +
+    'before the project is run. Split logic into local modules as it grows.',
   python:
     'This is a Python 3 project. The entry point is main.py at the project ' +
-    'root and the whole program must run with `python main.py` using only the ' +
-    'standard library - no pip installs. Split logic into small local modules ' +
-    'when it grows.',
+    'root and it must run with `python main.py`. Prefer the standard library ' +
+    'so it runs with no install step, but if the task genuinely needs a ' +
+    'package, list it in requirements.txt - it is installed before the project ' +
+    'is run. Split logic into local modules as it grows.',
 };
 
 /** What "finished" means, per mode - the auditor judges against this. */
 const DEFINITION_OF_DONE = {
   auto:
-    'the files as written satisfy the request end to end; anything visual ' +
-    'works by simply opening index.html',
+    'the project as written satisfies the request end to end, using whatever ' +
+    'stack the planner chose, and its own entry point runs or serves cleanly',
   nextjs:
     '`npm run dev` serves the requested app: app/page.tsx renders it, every ' +
     'import resolves to a file that exists, and package.json/tsconfig were ' +
@@ -146,7 +155,7 @@ const DEFINITION_OF_DONE = {
 
 /** A believable example path for the planner prompt, per mode. */
 const EXAMPLE_PATH = {
-  auto: 'index.html',
+  auto: null,
   nextjs: 'components/Header.tsx',
   vite: 'src/app.ts',
   static: 'script.js',
@@ -179,7 +188,10 @@ function inferMode(requestText) {
   if (/\bpython\b|\bflask\b|\bdjango\b|\bpygame\b|\.py\b/i.test(t)) return 'python';
   if (/\bcli\b|node script|command[- ]line|\bterminal\b/i.test(t)) return 'node';
   if (/\bstatic\b|landing page|single html|one file|single file/i.test(t)) return 'static';
-  return VISUAL_ASK.test(t) ? 'static' : 'node';
+  // No further guessing. Everything above is an explicit signal from the
+  // user; beyond that, staying in Auto lets the planner pick the stack rather
+  // than having this regex quietly decide the project is a static page.
+  return 'auto';
 }
 
 /* ---------------------------------------------------------- role prompts */
@@ -190,14 +202,16 @@ function systems(modeKey) {
   const conv = CONVENTIONS[mode.key];
   const done = DEFINITION_OF_DONE[mode.key];
   const example = EXAMPLE_PATH[mode.key];
+  // Auto has no example on purpose: naming one biases every project toward it.
+  const egPath = example ? ` (e.g. ${example})` : '';
 
   const scaffoldRule = mode.scaffold
     ? 'The scaffold already exists on disk and appears in the EXISTING FILES ' +
       'list - name a scaffold file only to REPLACE its contents, and never ' +
       're-emit package.json, lockfiles or config files unless the request ' +
       'genuinely changes them.'
-    : 'There is no scaffold - your first path is the entry file itself ' +
-      (mode.previews === 'browser' ? '(usually index.html).' : '.');
+    : 'There is no scaffold - your first path is the entry point of whatever ' +
+      'stack this project needs.';
 
   const qualityRule =
     mode.previews === 'browser'
@@ -211,7 +225,7 @@ function systems(modeKey) {
 ${conv}
 Rules you must never break:
 1. Reply INSTANTLY with ONE line only. No thinking out loud, no tools, no browsing, no markdown, no backticks, no prose. You never write file contents yourself.
-2. To a REQUEST or a WRITTEN SO FAR block, answer with exactly one relative file path (e.g. ${example}) - the single most useful file to write next - or the single word DONE when nothing more is needed. The whole answer is that one token: no "Next file:", no bullet, no period, no quotes, no code fence.
+2. To a REQUEST or a WRITTEN SO FAR block, answer with exactly one relative file path${egPath} - the single most useful file to write next - or the single word DONE when nothing more is needed. The whole answer is that one token: no "Next file:", no bullet, no period, no quotes, no code fence.
 3. Place files using the EXISTING FILES list: extend the structure that is already there and keep every import resolvable. Naming a file that already exists means its contents get REPLACED, so only name one when you mean to rewrite it.
 4. ${scaffoldRule}
 5. To a REVIEW block, answer with EXACTLY ONE WORD: PRINT if the content is a valid, complete file for that path, otherwise RETRY.
