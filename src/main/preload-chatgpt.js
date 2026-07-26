@@ -624,7 +624,11 @@ async function awaitReply(opts = {}) {
   let sawGenerating = false;
 
   while (Date.now() - started < timeoutMs) {
-    await sleep(400);
+    await sleep(200);
+    // Sample the stop button every tick, not only once content is stable:
+    // a fast reply can start and finish between two lazy checks, and never
+    // "seeing" generation is what forces the slow no-signal quiet window.
+    if (isGenerating()) sawGenerating = true;
     const full = transcript();
 
     let delta = echoSeen ? afterEcho(text, full) : null;
@@ -655,7 +659,6 @@ async function awaitReply(opts = {}) {
 
     const stableFor = Date.now() - lastChange;
     if (isGenerating()) {
-      sawGenerating = true;
       // A stop button that never disappears - or one that turns out not to be
       // about generation at all - must not cost us the entire timeout, so we
       // still give up on it once the answer has been unchanged for far longer
@@ -663,7 +666,10 @@ async function awaitReply(opts = {}) {
       if (stableFor > Math.max(quietMs * 3, 20000)) return meaningful;
       continue;
     }
-    const quiet = sawGenerating ? Math.min(quietMs, 1500) : quietMs;
+    // The stop button vanishing is a definitive end-of-stream signal, so once
+    // we have seen it there is nothing to wait for beyond one settling tick.
+    // Guessing from "text stopped changing" alone still needs the long window.
+    const quiet = sawGenerating ? 600 : quietMs;
     if (stableFor > quiet) return meaningful;
   }
 
@@ -923,6 +929,51 @@ document.addEventListener(
   },
   true
 );
+
+/* ------------------------------------------------------------ declutter */
+
+/**
+ * Account banners ChatGPT injects above the conversation ("A workspace member
+ * hit a limit", upgrade nags). They steal vertical space in a quarter-screen
+ * tab, and their buttons are exactly the kind of thing the model-picker scan
+ * has to keep stepping around. Hidden, never clicked - this only changes what
+ * is displayed, it does not dismiss or act on the notice.
+ */
+const BANNER_TEXT =
+  /(workspace member hit a limit|turn on auto-?reload|add credits|upgrade your plan|you're out of credits)/i;
+
+function declutter() {
+  const buttons = [...document.querySelectorAll('button, a[role="button"]')];
+  for (const b of buttons) {
+    if (!BANNER_TEXT.test((b.textContent || '').trim())) continue;
+    // Climb to the banner container: the first ancestor that is wide, short,
+    // and does not contain the composer (hiding that would break the tab).
+    let node = b;
+    for (let i = 0; i < 6 && node.parentElement; i++) {
+      node = node.parentElement;
+      const r = node.getBoundingClientRect();
+      if (r.width > 250 && r.height > 0 && r.height < 220 && !node.querySelector('#prompt-textarea')) {
+        node.style.setProperty('display', 'none', 'important');
+        break;
+      }
+    }
+  }
+}
+
+function watchForBanners() {
+  declutter();
+  const obs = new MutationObserver(() => declutter());
+  obs.observe(document.documentElement, { childList: true, subtree: true });
+  // The observer misses banners that are only re-styled into view, so a slow
+  // sweep backs it up without costing anything measurable.
+  setInterval(declutter, 4000);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', watchForBanners);
+} else {
+  watchForBanners();
+}
 
 /* --------------------------------------------------------------- bridge */
 

@@ -362,7 +362,23 @@ async function ensureSeeded(modeKey) {
     seeded.clear();
     seededMode = modeKey;
   }
-  for (const tag of TAGS_ALL) await seedTab(tag);
+  const pending = TAGS_ALL.filter((t) => !seeded.has(t));
+  if (!pending.length) return;
+
+  // The four seeds are independent, and typing goes to a specific webContents
+  // rather than "whatever has focus", so they can run at once. Serially this
+  // was 28s of a 113s run - a quarter of the wall clock spent waiting on four
+  // things that never needed to wait for each other.
+  status(`seeding ${pending.length} tabs`);
+  const results = await Promise.allSettled(pending.map((tag) => seedTab(tag)));
+
+  // Concurrency is the one thing that could plausibly upset the composer, so
+  // anything that failed gets a serial second chance before the run gives up.
+  const failed = pending.filter((_, i) => results[i].status === 'rejected');
+  for (const tag of failed) {
+    log(`${tag.toUpperCase()}: parallel seed failed — retrying on its own`, 'err');
+    await seedTab(tag);
+  }
 }
 
 /** Build noise that must never reach a prompt or the files list. */
