@@ -320,8 +320,25 @@ const TAGS = {
   // condense() here and not at the call site: a 51KB body typed into the
   // composer wedged the tab, prepare/composerText timed out and the run
   // silently skipped review. The reviewer only ever answers one word.
-  review: (path, body) =>
-    `REVIEW\nPATH: ${path}\nCONTENT:\n${condense(body)}\n\nReply with exactly one word: PRINT or RETRY.`,
+  review: (path, body) => {
+    const full = String(body || '');
+    // 12000, not 4000: at 4000 a normal 22KB page came back as head+tail around
+    // a huge gap, and the reviewer - correctly reading what it was shown - said
+    // RETRY to complete files over and over. Still far under the ~50KB paste
+    // that wedges a composer, which is the reason any cap exists.
+    const shown = condense(full, 12000);
+    const elided = shown.length < full.length;
+    return (
+      `REVIEW\nPATH: ${path}\nCONTENT:\n${shown}\n\n` +
+      (elided
+        ? `NOTE: the middle of this file was cut out by the harness purely to keep ` +
+          `the message short. The file on disk is ${full.length} characters and is ` +
+          `COMPLETE. The gap is not truncation - do not answer RETRY because of it. ` +
+          `Judge only the code you can actually see.\n\n`
+        : '') +
+      `Reply with exactly one word: PRINT or RETRY.`
+    );
+  },
   next: (written, note, existingFiles) =>
     `WRITTEN SO FAR:\n${renderFiles(written)}\n` +
     (note ? `AUDITOR SAYS: ${note}\n` : '') +

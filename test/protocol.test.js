@@ -270,8 +270,15 @@ test('the reviewer prompt is bounded no matter how big the file is', () => {
   // skipped, so the review tag must condense on its own.
   const huge = 'z'.repeat(51822);
   const prompt = p.TAGS.review('index.html', huge);
-  assert.ok(prompt.length < 5000, `review prompt was ${prompt.length} chars`);
+  // Bounded, but NOT so tight that a normal file looks truncated: a 4000-char
+  // cap turned an ordinary 22KB page into head+tail around a huge gap, and the
+  // reviewer - reading exactly what it was shown - answered RETRY to complete
+  // files until the run gave up. Well under the ~50KB that wedges a composer.
+  assert.ok(prompt.length < 14000, `review prompt was ${prompt.length} chars`);
+  assert.ok(prompt.length > 8000, 'so aggressive the reviewer cannot judge the code');
   assert.ok(prompt.includes('characters elided'));
+  // And it must say the gap is ours, or the reviewer reads it as truncation.
+  assert.ok(/do not answer RETRY because of it/i.test(prompt));
   assert.ok(/PRINT/.test(prompt) && /RETRY/.test(prompt));
   assert.ok(prompt.includes('index.html'));
 });
@@ -592,7 +599,7 @@ test('condense keeps the reviewer prompt bounded for every mode', () => {
   const huge = 'z'.repeat(120000);
   for (const file of ['index.html', 'app/page.tsx', 'main.py', 'src/App.jsx']) {
     const prompt = p.TAGS.review(file, huge);
-    assert.ok(prompt.length < 5000, `${file}: review prompt was ${prompt.length} chars`);
+    assert.ok(prompt.length < 14000, `${file}: review prompt was ${prompt.length} chars`);
     assert.ok(prompt.includes(file));
   }
 });

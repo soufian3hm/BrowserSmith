@@ -38,7 +38,11 @@ app.setName(PRODUCT.product);
 if (process.platform === 'win32') app.setAppUserModelId(`com.${PRODUCT.brand}.app`);
 
 /** How much text one insertText call may carry, and the gap between calls. */
-const TYPE_CHUNK = 4096;
+// Chunking exists for the ~50KB paste that wedges a composer, not for ordinary
+// prompts. A 12KB review prompt used to be split into four pieces for no gain
+// and every extra seam is a chance to land text out of order, so only genuinely
+// huge bodies are split at all.
+const TYPE_CHUNK = 24000;
 const TYPE_YIELD_MS = 16; // ~one frame: long enough for the editor to paint
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -532,11 +536,15 @@ function registerIpc() {
       await wc.insertText(body);
       return true;
     }
+    // Focus ONCE, before the first piece, and never again inside the loop.
+    // Focusing a contenteditable restores its saved selection, so re-focusing
+    // between pieces put the caret back where it had been and the next chunk
+    // landed there instead of after the previous one. The prompt arrived
+    // scrambled - the trailing "Reply with exactly one word" instruction ended
+    // up buried mid-file - and the reviewer, reading a jumbled document, quite
+    // reasonably answered RETRY to every complete file we sent it.
     for (const piece of typeChunks(body)) {
       if (wc.isDestroyed()) throw new Error('tab closed while typing');
-      // Re-focus per piece: another tab focusing mid-insert would otherwise
-      // spray the rest of the prompt into the wrong composer.
-      wc.focus();
       await wc.insertText(piece);
       await delay(TYPE_YIELD_MS);
     }
