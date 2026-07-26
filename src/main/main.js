@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, shell, webContents } = require('electron');
 const path = require('node:path');
 const workspace = require('./workspace');
+const { SITE } = require('../shared/site');
 const sessionStore = require('./session-store');
 const toolchain = require('./toolchain');
 
@@ -24,7 +25,7 @@ function createWindow() {
     width: 1680,
     height: 1000,
     backgroundColor: '#111113',
-    title: 'notioned',
+    title: SITE.brand,
     webPreferences: {
       preload: path.join(__dirname, 'preload-control.js'),
       contextIsolation: true,
@@ -32,14 +33,14 @@ function createWindow() {
       // A sandboxed preload may only require 'electron' and a few builtins, so
       // it cannot load ../shared/protocol. The control window loads no remote
       // content - only our own index.html - so unsandboxing it is contained.
-      // The two Notion webviews stay sandboxed; their preload requires nothing.
+      // The chat webviews stay sandboxed; their preload requires nothing.
       sandbox: false,
-      webviewTag: true, // the two Notion tabs
+      webviewTag: true, // the four chat tabs
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
-  // Notion's OAuth / "open in app" popups must stay inside our session, not
+  // The site's OAuth / "open in app" popups must stay inside our session, not
   // bounce to the system browser where the login would not be captured.
   win.webContents.on('will-attach-webview', (_e, prefs) => {
     prefs.nodeIntegration = false;
@@ -89,7 +90,7 @@ app.whenReady().then(async () => {
   });
 
   // Paste whatever is on the clipboard (a screenshot, in practice) into a tab.
-  // This is how a Notion chat gets to actually see the running preview.
+  // This is how a chat tab gets to actually see the running preview.
   ipcMain.handle('tab:paste', (_e, { id }) => {
     const wc = webContents.fromId(id);
     if (!wc) throw new Error('no such webContents ' + id);

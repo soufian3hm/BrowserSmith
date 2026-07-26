@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * The wire contract between the orchestrator and the four Notion tabs.
+ * The wire contract between the orchestrator and the four chat tabs.
  *
  * Tab A ("planner")  -> receives the request plus the existing-files list and
  *                       answers with ONE line: the next file path, or DONE.
@@ -260,7 +260,7 @@ const TAGS = {
 };
 
 /* --------------------------------------------------------------- parsers */
-/* Battle-tested against live Notion output - behavior carried over as-is. */
+/* Battle-tested against live chat-product output - carried over as-is. */
 
 /** The auditor's answer: null when it says the project is finished. */
 function parseAudit(reply) {
@@ -288,7 +288,7 @@ function clean(text) {
   return String(text || '')
     .split('\n')
     .filter((l) => !PLACEHOLDER_LINE.test(l.trim()))
-    // Notion stamps a time on each message bubble, e.g. "4:37 AM".
+    // Chat UIs stamp a time on each message bubble, e.g. "4:37 AM".
     .filter((l) => !/^\d{1,2}:\d{2}\s*(AM|PM)?$/i.test(l.trim()))
     .join('\n')
     .trim();

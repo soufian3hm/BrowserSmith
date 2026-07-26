@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * MCP stdio server over the notioned workspace. Lets an external agent (Claude
- * Code, etc.) read and write the same directory the Notion loop writes into -
+ * MCP stdio server over the buildgpt workspace. Lets an external agent (Claude
+ * Code, etc.) read and write the same directory the agent loop writes into -
  * this is the "handshake" side of the system.
  */
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
@@ -10,11 +10,11 @@ const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio
 const { z } = require('zod');
 const workspace = require('../main/workspace');
 
-const server = new McpServer({ name: 'notioned', version: '0.1.0' });
+const server = new McpServer({ name: 'buildgpt', version: '0.1.0' });
 
 server.tool(
   'workspace_list',
-  'List every file the Notion agent loop has produced.',
+  'List every file the buildgpt agent loop has produced.',
   {},
   async () => {
     const files = await workspace.list();
@@ -24,7 +24,7 @@ server.tool(
 
 server.tool(
   'workspace_read',
-  'Read one file from the notioned workspace.',
+  'Read one file from the buildgpt workspace.',
   { path: z.string().describe('Path relative to workspace/') },
   async ({ path }) => ({
     content: [{ type: 'text', text: await workspace.readFile(path) }],
@@ -33,7 +33,7 @@ server.tool(
 
 server.tool(
   'workspace_write',
-  'Write a file into the notioned workspace.',
+  'Write a file into the buildgpt workspace.',
   {
     path: z.string().describe('Path relative to workspace/'),
     content: z.string(),

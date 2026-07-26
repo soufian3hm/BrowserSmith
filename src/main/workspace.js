@@ -4,7 +4,7 @@ const path = require('node:path');
 
 /**
  * Every file the loop produces lands under ./workspace. Content coming back
- * from Notion is untrusted text, so paths are sanitized and confined here -
+ * from the chat tabs is untrusted text, so paths are sanitized and confined here -
  * a reply of "../../.ssh/authorized_keys" must never escape.
  */
 function computeRoot() {

@@ -1,17 +1,30 @@
 'use strict';
 /**
  * Bridge between the control renderer (app.js) and the main process.
- * Exposes exactly the window.notioned surface described in the shared
- * contract - app.js is written against this shape, nothing else.
+ * Exposes exactly the surface described in the shared contract - app.js is
+ * written against this shape, nothing else. `site` rides along so the renderer
+ * can name the chat product in its copy without hardcoding it.
  */
 const { contextBridge, ipcRenderer } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
 const protocol = require('../shared/protocol');
+const { SITE } = require('../shared/site');
 
-contextBridge.exposeInMainWorld('notioned', {
+// The webview preload sits beside this file and is named after the site key,
+// so the seam stays the only place the product is spelled out. Fail loudly if
+// it is missing: tabs would otherwise boot with no DOM knowledge at all, which
+// shows up much later as unexplained timeouts.
+const webviewPreload = `preload-${SITE.key}.js`;
+if (!fs.existsSync(path.join(__dirname, webviewPreload))) {
+  throw new Error(`webview preload not found: ${webviewPreload}`);
+}
+
+const api = {
+  site: SITE,
   preloadPath:
-    'file://' + path.join(__dirname, 'preload-notion.js').replace(/\\/g, '/'),
-  partition: 'persist:notion',
+    'file://' + path.join(__dirname, webviewPreload).replace(/\\/g, '/'),
+  partition: SITE.partition,
 
   protocol: {
     MODES: protocol.MODES,
@@ -82,4 +95,6 @@ contextBridge.exposeInMainWorld('notioned', {
   shell: {
     open: (url) => ipcRenderer.invoke('shell:open', { url }),
   },
-});
+};
+
+contextBridge.exposeInMainWorld(SITE.brand, api);

@@ -1,10 +1,18 @@
 'use strict';
 /**
- * Injected into every Notion AI tab. Owns all DOM knowledge.
+ * Injected into every ChatGPT tab. Owns all DOM knowledge.
  *
- * Notion's markup changes without warning, so nothing here hardcodes a Notion
- * class name. We find the composer heuristically, and the user can override
- * both selectors at runtime via "pick mode" (click the element, we remember it).
+ * OpenAI's markup changes without warning, so nothing here depends on a
+ * generated class name. Known-good hooks (#prompt-textarea, data-testid
+ * send-button / stop-button, data-message-author-role) are tried first and every
+ * one of them falls back to the geometry/role heuristics that carried this
+ * driver before, so a redesign degrades instead of breaking. The user can also
+ * override every selector at runtime via "pick mode" (click the element, we
+ * remember it).
+ *
+ * This preload is sandboxed, so it cannot require('../shared/site'): the site
+ * constants it needs (new-chat label, host check) are duplicated here as local
+ * regexes. Keep them in step with src/shared/site.js.
  */
 const { ipcRenderer } = require('electron');
 
@@ -16,13 +24,36 @@ const state = {
   picking: null,          // 'composer' | 'output' | 'send' | 'model' | null
 };
 
-/** Names Notion currently exposes; used to recognise the model dropdown. */
+/**
+ * Names ChatGPT currently exposes, plus the generic families, used to recognise
+ * the model dropdown. "chatgpt" is listed separately because \bgpt\b does not
+ * match inside "ChatGPT" - the trigger's label is usually exactly that word.
+ */
 const MODEL_HINT =
-  /\b(claude|opus|sonnet|haiku|fable|gpt|o\d|gemini|llama|mistral|mixtral|deepseek|grok|kimi|glm|qwen|nova|command|notion ai|auto|default)\b/i;
+  /\b(chatgpt|gpt|o\d|auto|thinking|instant|mini|pro|legacy|turbo|claude|opus|sonnet|haiku|fable|gemini|llama|mistral|mixtral|deepseek|grok|kimi|glm|qwen|nova|command|default)\b/i;
+
+/**
+ * Header controls that MODEL_HINT would otherwise claim: "Upgrade to Go",
+ * "Get Plus" and friends contain model words but open a paywall, not a menu.
+ */
+const MODEL_DENY =
+  /\b(upgrade|subscribe|renew|get (plus|pro|go)|share|new chat|log ?in|log ?out|sign ?up|sign ?in|settings|profile|invite|help|archive|library|sora|gpts|projects)\b/i;
+
+/** Kept local because ../shared/site is unreachable from a sandboxed preload. */
+const NEW_CHAT_LABEL = /\bnew chat\b/i;
 
 /* ------------------------------------------------------------------ utils */
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** querySelector that survives a selector Chromium refuses to parse. */
+function q1(sel) {
+  try {
+    return document.querySelector(sel);
+  } catch {
+    return null;
+  }
+}
 
 function cssPath(el) {
   // Short, reasonably stable path: prefer id, then data-* attrs, then nth-child.
@@ -41,8 +72,8 @@ function cssPath(el) {
 }
 
 /**
- * `min` is the smallest edge we accept. It defaults small because Notion's send
- * control is a 28px icon button - an earlier 40px floor silently filtered it
+ * `min` is the smallest edge we accept. It defaults small because the send
+ * control is a ~32px icon button - an earlier 40px floor silently filtered it
  * out. Composer detection passes a larger floor of its own.
  */
 function visible(el, min = 8) {
@@ -53,10 +84,26 @@ function visible(el, min = 8) {
   return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
 }
 
+const isDisabled = (el) =>
+  !!el && (el.disabled === true || el.getAttribute('aria-disabled') === 'true');
+
+/** ChatGPT's composer is a ProseMirror contenteditable, normally #prompt-textarea. */
+const COMPOSER_SELECTORS = [
+  '#prompt-textarea',
+  'div[contenteditable="true"].ProseMirror',
+  'form [contenteditable="true"]',
+];
+
 /** The message input box. */
 function findComposer() {
   if (state.composerSelector) {
     const el = document.querySelector(state.composerSelector);
+    if (visible(el)) return el;
+  }
+  // Identity beats size: when we know exactly which node it is, do not put it
+  // through the "is this big enough to be a composer" filter below.
+  for (const sel of COMPOSER_SELECTORS) {
+    const el = q1(sel);
     if (visible(el)) return el;
   }
   const candidates = [
@@ -65,10 +112,17 @@ function findComposer() {
     ),
   ].filter((el) => visible(el, 40)); // a composer is never a tiny icon
   if (!candidates.length) return null;
-  // The composer is the lowest one on screen (Notion puts it at the bottom).
+  // The composer is the lowest one on screen (ChatGPT docks it to the bottom).
   return candidates.sort(
     (a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top
   )[0];
+}
+
+/** One turn of the conversation, newest last, in document order. */
+function messageNodes() {
+  const byRole = [...document.querySelectorAll('[data-message-author-role]')];
+  if (byRole.length) return byRole;
+  return [...document.querySelectorAll('article[data-testid^="conversation-turn"]')];
 }
 
 /** The scroll container holding the conversation. */
@@ -77,21 +131,34 @@ function findOutputRoot() {
     const el = document.querySelector(state.outputSelector);
     if (el) return el;
   }
-  const composer = findComposer();
-  // Walk up from the composer looking for a scrollable ancestor.
-  let node = composer;
-  while (node && node.parentElement) {
-    node = node.parentElement;
-    const s = getComputedStyle(node);
-    if (
-      (s.overflowY === 'auto' || s.overflowY === 'scroll') &&
-      node.scrollHeight > node.clientHeight
-    ) {
-      return node;
+  // Anchor on a real message when there is one: the thread's scroller is its
+  // nearest scrollable ancestor, and that is true whatever the layout does.
+  const msgs = messageNodes();
+  const scrollableAncestor = (start) => {
+    for (let n = start; n && n.parentElement; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (
+        (s.overflowY === 'auto' || s.overflowY === 'scroll') &&
+        n.scrollHeight > n.clientHeight &&
+        n.getBoundingClientRect().height > 200
+      ) {
+        return n;
+      }
     }
+    return null;
+  };
+  if (msgs.length) {
+    const root = scrollableAncestor(msgs[msgs.length - 1]);
+    if (root) return root;
   }
-  // Notion's message scroller is often a sibling of the composer, not an
-  // ancestor. Fall back to the largest scrollable region on the page.
+
+  const composer = findComposer();
+  const fromComposer = composer && composer.parentElement
+    ? scrollableAncestor(composer.parentElement)
+    : null;
+  if (fromComposer) return fromComposer;
+
+  // Last resort: the largest scrollable region on the page.
   const scrollers = [...document.querySelectorAll('div, main, section')]
     .filter((el) => {
       const s = getComputedStyle(el);
@@ -119,8 +186,8 @@ function focusEl(el) {
 }
 
 /**
- * Insert text without triggering Notion's markdown/slash-command handlers more
- * than necessary. beforeinput+insertText is what a real paste looks like to
+ * Insert text without triggering the composer's markdown/slash-command handlers
+ * more than necessary. beforeinput+insertText is what a real paste looks like to
  * ProseMirror-style editors.
  */
 function insertText(el, text) {
@@ -146,28 +213,59 @@ function insertText(el, text) {
   if (!el.textContent.trim()) document.execCommand('insertText', false, text);
 }
 
+/* -------------------------------------------------------------- generating */
+
 /**
- * Notion's send control. Preferred over Enter: Enter can insert a newline in a
- * rich-text composer, or be swallowed by an open slash-command menu.
- * Identified by aria-label / icon semantics, and by sitting to the right of and
- * vertically aligned with the composer.
+ * ChatGPT swaps the send button for a stop button while it streams, so the stop
+ * button is both a hazard (clicking it aborts the answer) and the single most
+ * reliable "still working" signal on the page.
  */
+function findStopButton() {
+  const explicit = q1('[data-testid="stop-button"]');
+  if (visible(explicit)) return explicit;
+  return (
+    [...document.querySelectorAll('button, [role="button"]')].find((b) => {
+      if (!visible(b)) return false;
+      const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
+      return /\bstop\b/i.test(label);
+    }) || null
+  );
+}
+
+const isGenerating = () => !!findStopButton();
+
+/**
+ * The send control. Preferred over Enter: Enter can insert a newline in a
+ * rich-text composer, or be swallowed by an open slash-command menu.
+ */
+const SEND_DENY =
+  /\b(stop|voice|dictate|dictation|microphone|mic|speech|read aloud|attach|upload|file|image|photo|camera|tools?|search|model|menu|settings|scroll|copy|edit|regenerate)\b/i;
+
 function findSendButton() {
   if (state.sendSelector) {
     const el = document.querySelector(state.sendSelector);
     if (visible(el)) return el;
   }
+  // While a reply streams this testid belongs to the stop button instead, so an
+  // exact match on "send-button" can never hand back the abort control.
+  const explicit = q1('[data-testid="send-button"]');
+  if (visible(explicit) && !isDisabled(explicit)) return explicit;
+
   const composer = findComposer();
   if (!composer) return null;
   const cr = composer.getBoundingClientRect();
 
-  // The model dropdown sits in the same toolbar and would otherwise win on
-  // position alone - clicking it opens a menu instead of sending.
+  // The model dropdown and the stop button both sit in reach of the composer
+  // and would otherwise win on position alone - one opens a menu instead of
+  // sending, the other kills the answer we are waiting for.
   const modelTrigger = findModelTrigger();
+  const stop = findStopButton();
 
-  const all = [...document.querySelectorAll('button, [role="button"]')].filter(
-    (b) => visible(b) && !b.disabled && b !== modelTrigger
-  );
+  const all = [...document.querySelectorAll('button, [role="button"]')].filter((b) => {
+    if (!visible(b) || isDisabled(b) || b === modelTrigger || b === stop) return false;
+    const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''} ${b.getAttribute('data-testid') || ''}`;
+    return !SEND_DENY.test(label);
+  });
 
   const byLabel = all.filter((b) => {
     const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
@@ -211,36 +309,57 @@ function pressEnter(el) {
 
 /* ----------------------------------------------------------------- models */
 
+const MODEL_SELECTORS = [
+  '[data-testid="model-switcher-dropdown-button"]',
+  '[data-testid*="model-switcher"]',
+  '[data-testid*="model-selector"]',
+  'button[aria-label*="model" i]',
+];
+
+const HEADER_SEL =
+  'header, nav, [role="banner"], [role="navigation"], [role="toolbar"], [data-testid*="header"]';
+
 /**
- * The control that opens the model list. It lives in the composer's toolbar and
- * its label is the currently-selected model, so we match on model-ish text
- * within the composer's own container rather than anywhere on the page.
+ * The control that opens the model list. Its label is the currently-selected
+ * model, so we match on model-ish text - but unlike Notion, ChatGPT puts it at
+ * the TOP of the conversation, not in the composer's toolbar. Searching the
+ * whole page and scoring header/nav placement is what replaces the old
+ * proximity-to-composer geometry, which looked in exactly the wrong place.
+ *
+ * Must never call findSendButton: that one calls us, to exclude us.
  */
 function findModelTrigger() {
   if (state.modelSelector) {
     const el = document.querySelector(state.modelSelector);
     if (visible(el)) return el;
   }
-  const composer = findComposer();
-  if (!composer) return null;
-  const cr = composer.getBoundingClientRect();
+  for (const sel of MODEL_SELECTORS) {
+    const el = q1(sel);
+    if (visible(el)) return el;
+  }
 
-  // Locate it by position, not by DOM depth: the toolbar's nesting changes with
-  // viewport size (it sits deeper when a tab is only a quarter of the window),
-  // which silently broke an earlier ancestor-climbing version of this.
-  const buttons = [
+  const scored = [
     ...document.querySelectorAll('button, [role="button"], [role="combobox"]'),
   ]
     .filter(visible)
-    .filter((b) => {
+    .map((b) => ({ b, t: (b.textContent || '').trim() }))
+    .filter(
+      ({ t }) => t.length > 0 && t.length < 40 && MODEL_HINT.test(t) && !MODEL_DENY.test(t)
+    )
+    .map(({ b }) => {
       const r = b.getBoundingClientRect();
-      const nearComposer = r.top < cr.bottom + 80 && r.bottom > cr.top - 80;
-      const t = (b.textContent || '').trim();
-      return nearComposer && t.length > 0 && t.length < 40 && MODEL_HINT.test(t);
+      let score = 0;
+      if (b.closest(HEADER_SEL)) score += 4;
+      if (b.getAttribute('aria-haspopup')) score += 3;
+      if (b.hasAttribute('aria-expanded')) score += 1;
+      if (r.top < 160) score += 2;
+      // Anything hugging the bottom is composer furniture (attachments, tools).
+      if (r.top > window.innerHeight - 200) score -= 3;
+      return { b, score, top: r.top, left: r.left };
     })
-    .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    .sort((a, b) => b.score - a.score || a.top - b.top || a.left - b.left);
 
-  return buttons[0] || null;
+  return scored.length ? scored[0].b : null;
 }
 
 function openMenuItems() {
@@ -250,6 +369,20 @@ function openMenuItems() {
     ),
   ].filter(visible);
   return items.map((el) => ({ el, label: (el.innerText || '').trim().split('\n')[0] }));
+}
+
+/**
+ * Close whatever popover we opened. Escape alone is not enough for every
+ * portalled menu, so fall back to an outside pointer press.
+ */
+async function closeMenu() {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(150);
+  if (!openMenuItems().length) return;
+  for (const type of ['pointerdown', 'mousedown', 'mouseup']) {
+    document.body.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: 2, clientY: 2 }));
+  }
+  await sleep(150);
 }
 
 /** Open the dropdown, read every model, close it again. Non-destructive. */
@@ -277,8 +410,7 @@ async function listModels() {
       break;
     }
   }
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  await sleep(150);
+  await closeMenu();
   return { current, models: [...new Set(labels)] };
 }
 
@@ -300,7 +432,7 @@ async function selectModel(name) {
       items.find((it) => it.label.toLowerCase().includes(name.toLowerCase()));
   }
   if (!match) {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await closeMenu();
     throw new Error(`model "${name}" not in the list`);
   }
   match.el.click();
@@ -310,7 +442,56 @@ async function selectModel(name) {
 
 /* ---------------------------------------------------------------- reading */
 
+/**
+ * Re-fence a rendered code block.
+ *
+ * innerText of a ChatGPT <pre> is "python\nCopy\nEdit\n<code>" - the toolbar is
+ * inside the block - and it carries no backticks. Handing that straight to the
+ * orchestrator would write "python/Copy/Edit" into the top of every generated
+ * file, and protocol.unfence() would have nothing to strip. So we rebuild the
+ * fence from the <code> element alone.
+ */
+function fenceOf(pre) {
+  const code = pre.querySelector('code');
+  const body = ((code || pre).innerText || '').replace(/\s+$/, '');
+  const lang = (code && (String(code.className).match(/language-([\w+#-]+)/) || [])[1]) || '';
+  return '```' + lang + '\n' + body + '\n```';
+}
+
+/**
+ * One message as text, with its code blocks fenced.
+ *
+ * The substitution is done on the live innerText rather than on a clone:
+ * innerText of a detached node degrades to textContent and loses every line
+ * break, which would destroy the file bodies we are here to collect.
+ */
+function readMessage(el) {
+  const text = el.innerText || '';
+  const pres = el.querySelectorAll('pre');
+  if (!pres.length) return text.trim();
+
+  let out = '';
+  let cursor = 0;
+  for (const pre of pres) {
+    const raw = (pre.innerText || '').trim();
+    const i = raw ? text.indexOf(raw, cursor) : -1;
+    if (i === -1) continue;
+    out += text.slice(cursor, i) + fenceOf(pre);
+    cursor = i + raw.length;
+  }
+  return (out + text.slice(cursor)).trim();
+}
+
+/**
+ * The conversation as text. Reading the message nodes rather than the whole
+ * scroller keeps page furniture ("ChatGPT can make mistakes", the composer
+ * itself when it lives inside the scroll region) out of the delta we diff.
+ */
 function transcript() {
+  const nodes = messageNodes();
+  if (nodes.length) {
+    return nodes.map(readMessage).filter(Boolean).join('\n\n');
+  }
   const root = findOutputRoot();
   return root ? root.innerText : '';
 }
@@ -339,10 +520,10 @@ function prepare() {
   return { before: state.before.length };
 }
 
-/** Click Notion's send control. Returns false if we could not find one. */
+/** Click the send control. Returns false if we could not find one. */
 function clickSend() {
   const btn = findSendButton();
-  if (!btn || btn.disabled) return false;
+  if (!btn || isDisabled(btn)) return false;
   btn.click();
   return true;
 }
@@ -356,19 +537,20 @@ function composerText() {
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 /**
- * Status lines Notion shows while it works - never part of an answer.
- * Notion AI can enter an agent mode that emits tool chatter ("Writing file",
- * "Loaded Computer tools"); treating those as a finished reply is what made
- * early runs return junk, so they are filtered and they do not count as output.
+ * Status lines shown while the model works - never part of an answer.
+ * ChatGPT surfaces reasoning and tool chatter ("Thinking", "Searching the web",
+ * "Thought for 8 seconds") in the same text flow; treating those as a finished
+ * reply is what made early runs return junk, so they are filtered and they do
+ * not count as output.
  */
 const PLACEHOLDER =
-  /^(generating|thinking|searching|working|loading|writing file|reading file|creating|crafting|drafting|composing|reviewing|preparing|analyz\w*|planning|browsing|running|loaded [\w\s]*tools?|using [\w\s]*tool|alpha|…|\.{3})[\s.…]*$/i;
+  /^(generating|thinking|reasoning|reasoned|searching|searching the web|browsing|browsing the web|finding sources|reading sources|done thinking|analyz\w*|working|loading|reading|planning|running|creating|crafting|drafting|composing|reviewing|preparing|writing file|reading file|(thought|reasoned|worked|searched|analyzed) for [\w\s.]*|loaded [\w\s]*tools?|using [\w\s]*tool|alpha|…|\.{3})[\s.…]*$/i;
 
 /**
  * Everything after the echo of our own prompt.
  *
- * Notion renders the message we sent into the transcript, so raw "text added
- * since we sent" always begins with our own words. We anchor on the tail of the
+ * The message we sent is rendered into the transcript, so raw "text added since
+ * we sent" always begins with our own words. We anchor on the tail of the
  * prompt and take what follows.
  */
 function afterEcho(text, full) {
@@ -388,11 +570,16 @@ function afterEcho(text, full) {
  * exists after it, and that content is neither a streaming placeholder nor
  * still changing. Waiting on "transcript stopped growing" alone is not enough -
  * the echo itself is growth, and it settles before the model starts answering.
+ *
+ * The stop button refines that but never replaces it: while it is on screen we
+ * refuse to return a half-written answer, and once we have seen it and it goes
+ * away we trust a much shorter quiet period. If we never see it at all (missing
+ * testid, reply finished between polls) the original timing still decides.
  */
 async function awaitReply(opts = {}) {
   const text = opts.text || '';
-  // Agent mode can sit on an unchanged status line for seconds at a time, so
-  // "quiet" has to be longer than the gap between its tool steps.
+  // Reasoning can sit on an unchanged status line for seconds at a time, so
+  // "quiet" has to be longer than the gap between its steps.
   const quietMs = opts.quietMs ?? 5000;
   const timeoutMs = opts.timeoutMs ?? 300000;
   const before = state.before ?? '';
@@ -409,6 +596,7 @@ async function awaitReply(opts = {}) {
   // 2. Wait for content after the echo to appear, settle, and not be a placeholder.
   let lastDelta = null;
   let lastChange = Date.now();
+  let sawGenerating = false;
 
   while (Date.now() - started < timeoutMs) {
     await sleep(400);
@@ -432,7 +620,20 @@ async function awaitReply(opts = {}) {
       lastChange = Date.now();
       continue;
     }
-    if (meaningful && Date.now() - lastChange > quietMs) return meaningful;
+    if (!meaningful) continue;
+
+    const stableFor = Date.now() - lastChange;
+    if (isGenerating()) {
+      sawGenerating = true;
+      // A stop button that never disappears - or one that turns out not to be
+      // about generation at all - must not cost us the entire timeout, so we
+      // still give up on it once the answer has been unchanged for far longer
+      // than any stream ever pauses.
+      if (stableFor > Math.max(quietMs * 3, 20000)) return meaningful;
+      continue;
+    }
+    const quiet = sawGenerating ? Math.min(quietMs, 1500) : quietMs;
+    if (stableFor > quiet) return meaningful;
   }
 
   if (lastDelta) return lastDelta;
@@ -450,7 +651,8 @@ async function dumpMenu() {
   const q = (s) => document.querySelectorAll(s).length;
   const pool = [
     ...document.querySelectorAll(
-      '[role="menu"] *, [role="listbox"] *, [role="dialog"] *, [data-overlay] *'
+      '[role="menu"] *, [role="listbox"] *, [role="dialog"] *, [data-overlay] *, ' +
+      '[data-radix-popper-content-wrapper] *'
     ),
   ];
   const sample = pool
@@ -465,7 +667,7 @@ async function dumpMenu() {
     containers: q('[role="menu"], [role="listbox"], [role="dialog"]'),
     sample: [...new Set(sample)].slice(0, 30),
   };
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await closeMenu();
   return out;
 }
 
@@ -506,7 +708,8 @@ function dumpButtons() {
       return {
         text: (b.textContent || '').trim().slice(0, 24),
         aria: b.getAttribute('aria-label'),
-        disabled: !!b.disabled,
+        testid: b.getAttribute('data-testid'),
+        disabled: isDisabled(b),
         x: Math.round(r.left), right: Math.round(r.right),
         w: Math.round(r.width), h: Math.round(r.height),
         svg: !!b.querySelector('svg'),
@@ -531,7 +734,7 @@ async function ask(text, opts = {}) {
 
   // Prefer the real send button; Enter is the fallback for when we can't find it.
   const btn = findSendButton();
-  if (btn && !btn.disabled) {
+  if (btn && !isDisabled(btn)) {
     btn.click();
     await sleep(200);
     // If the composer still holds our text, the click missed - fall back.
@@ -554,7 +757,7 @@ async function ask(text, opts = {}) {
       last = now;
       lastChange = Date.now();
       if (now.length > before.length) grew = true;
-    } else if (grew && Date.now() - lastChange > quietMs) {
+    } else if (grew && !isGenerating() && Date.now() - lastChange > quietMs) {
       break;
     }
   }
@@ -570,15 +773,31 @@ async function ask(text, opts = {}) {
 /* -------------------------------------------------------------- new chat */
 
 /**
- * Start a fresh conversation. Long transcripts get virtualized by Notion -
- * old messages unmount as new ones stream - which blinds the growth-based
- * reply detector. Rotating to a new chat resets that cleanly.
+ * Start a fresh conversation. Long transcripts get virtualized - old messages
+ * unmount as new ones stream - which blinds the growth-based reply detector.
+ * Rotating to a new chat resets that cleanly.
  */
 async function newChat() {
-  const btn = [...document.querySelectorAll('button, [role="button"], a[href]')].find((b) => {
+  const labelled = (b) => {
     const label = `${b.getAttribute('aria-label') || ''} ${b.title || ''}`;
-    return /\bnew (chat|conversation)\b/i.test(label);
-  });
+    return NEW_CHAT_LABEL.test(label) || /\bnew conversation\b/i.test(label);
+  };
+  // An untitled conversation in the sidebar is *called* "New chat", so text
+  // matching alone would reopen an old thread instead of starting one. Trust
+  // aria-label/testid first, and never accept a history link.
+  const candidates = [...document.querySelectorAll('button, [role="button"], a[href]')];
+  const byText = (b) =>
+    !b.closest('a[href^="/c/"]') &&
+    NEW_CHAT_LABEL.test((b.textContent || '').trim()) &&
+    (b.textContent || '').trim().length < 24;
+
+  const pool = [
+    q1('[data-testid="create-new-chat-button"]'),
+    ...candidates.filter(labelled),
+    ...candidates.filter(byText),
+  ].filter(Boolean);
+
+  const btn = pool.find((b) => visible(b)) || pool[0];
   if (!btn) throw new Error('New chat button not found');
   btn.click();
   // The click may navigate; the fresh chat's composer mounts noticeably later.
@@ -599,8 +818,8 @@ async function newChat() {
 
 /**
  * Non-destructive checks against the live page. Everything here either only
- * reads, or types into the composer and then clears it again - nothing is sent
- * to Notion, so running this costs no AI credits and leaves no chat history.
+ * reads, or types into the composer and then clears it again - nothing is sent,
+ * so running this costs no credits and leaves no chat history.
  */
 async function selftest() {
   const checks = [];
@@ -613,7 +832,9 @@ async function selftest() {
     }
   };
 
-  check('page is Notion', () => (/notion\.com/.test(location.host) ? location.host : false));
+  check('page is ChatGPT', () =>
+    /(^|\.)(chatgpt\.com|openai\.com)$/.test(location.host) ? location.host : false
+  );
   check('logged in (no login form)', () =>
     document.querySelector('input[type="password"]') ? false : 'no password field'
   );
@@ -627,9 +848,9 @@ async function selftest() {
       : false
   );
 
-  // NB: the send button is deliberately not checked here. Notion only renders
-  // it once the composer has text, so it can only be verified mid-typing -
-  // the renderer's self-test does that after injecting a marker.
+  // NB: the send button is deliberately not checked here. ChatGPT shows a
+  // voice control until the composer has text, so send can only be verified
+  // mid-typing - the renderer's self-test does that after injecting a marker.
 
   const root = findOutputRoot();
   check('output root found', () => (root ? cssPath(root) : false));
@@ -708,6 +929,8 @@ ipcRenderer.on('drive', async (_e, { id, cmd, args }) => {
         modelTrigger: model ? (model.textContent || '').trim() : null,
         outputRoot: findOutputRoot() ? cssPath(findOutputRoot()) : null,
         transcriptChars: transcript().length,
+        messages: messageNodes().length,
+        generating: isGenerating(),
         overrides: {
           composer: state.composerSelector,
           output: state.outputSelector,

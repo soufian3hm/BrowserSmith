@@ -2,14 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>notioned</title>
+    <title>buildgpt</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
     <header class="appbar">
-      <span class="brand">notioned</span>
+      <span class="brand">buildgpt</span>
       <button id="btn-autopilot" aria-pressed="false"
-        title="Type once in the planner tab; the system finishes on its own">Autopilot</button>
+        title="Type once in the planner's ChatGPT tab; the system finishes on its own">Autopilot</button>
 
       <div class="appbar-right">
         <span id="status" aria-live="polite">idle</span>
@@ -22,13 +22,13 @@
               <span class="menu-label">Maintenance</span>
               <div class="menu-row">
                 <button id="btn-selftest" title="Run the built-in diagnostics">Self-test</button>
-                <button id="btn-forget" title="Wipe the saved Notion session">Forget login</button>
+                <button id="btn-forget" title="Wipe the saved ChatGPT session">Forget login</button>
               </div>
             </div>
             <div class="menu-group">
               <span class="menu-label">Element pickers</span>
               <p class="menu-note">
-                Rescue hatch for when Notion&rsquo;s UI changes. Click a picker, then click the
+                Rescue hatch for when ChatGPT&rsquo;s UI changes. Click a picker, then click the
                 matching element inside that tab to re-teach it.
               </p>
               <div class="pick-group">
@@ -86,35 +86,35 @@
           <section class="view view-agents" aria-label="Agent tabs">
             <div class="tab" data-tab="a">
               <div class="tab-head">
-                <span class="role">A &middot; Planner</span>
+                <span class="role">A &middot; Planner &middot; ChatGPT</span>
                 <select id="model-a" aria-label="Model for tab A"><option value="">model&hellip;</option></select>
                 <button class="mini" data-models="a" aria-label="Reload models for tab A" title="Reload models">&#10227;</button>
               </div>
-              <webview id="tab-a" src="https://app.notion.com/ai" allowpopups></webview>
+              <webview id="tab-a" src="https://chatgpt.com/" allowpopups></webview>
             </div>
             <div class="tab" data-tab="b">
               <div class="tab-head">
-                <span class="role">B &middot; Builder</span>
+                <span class="role">B &middot; Builder &middot; ChatGPT</span>
                 <select id="model-b" aria-label="Model for tab B"><option value="">model&hellip;</option></select>
                 <button class="mini" data-models="b" aria-label="Reload models for tab B" title="Reload models">&#10227;</button>
               </div>
-              <webview id="tab-b" src="https://app.notion.com/ai" allowpopups></webview>
+              <webview id="tab-b" src="https://chatgpt.com/" allowpopups></webview>
             </div>
             <div class="tab" data-tab="c">
               <div class="tab-head">
-                <span class="role">C &middot; Reviewer</span>
+                <span class="role">C &middot; Reviewer &middot; ChatGPT</span>
                 <select id="model-c" aria-label="Model for tab C"><option value="">model&hellip;</option></select>
                 <button class="mini" data-models="c" aria-label="Reload models for tab C" title="Reload models">&#10227;</button>
               </div>
-              <webview id="tab-c" src="https://app.notion.com/ai" allowpopups></webview>
+              <webview id="tab-c" src="https://chatgpt.com/" allowpopups></webview>
             </div>
             <div class="tab" data-tab="d">
               <div class="tab-head">
-                <span class="role">D &middot; Auditor</span>
+                <span class="role">D &middot; Auditor &middot; ChatGPT</span>
                 <select id="model-d" aria-label="Model for tab D"><option value="">model&hellip;</option></select>
                 <button class="mini" data-models="d" aria-label="Reload models for tab D" title="Reload models">&#10227;</button>
               </div>
-              <webview id="tab-d" src="https://app.notion.com/ai" allowpopups></webview>
+              <webview id="tab-d" src="https://chatgpt.com/" allowpopups></webview>
             </div>
           </section>
 
@@ -150,7 +150,7 @@
         <div class="field">
           <label for="prompt">Prompt</label>
           <textarea id="prompt" spellcheck="false"
-            placeholder="Describe what to build. The four agents plan, write, review and audit it &mdash; then it runs."></textarea>
+            placeholder="Describe what to build. The four ChatGPT agents plan, write, review and audit it &mdash; then it runs."></textarea>
         </div>
 
         <div class="actions">

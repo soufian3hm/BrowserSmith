@@ -2,19 +2,20 @@
 const { session, app } = require('electron');
 const path = require('node:path');
 const fsp = require('node:fs/promises');
+const { SITE } = require('../shared/site');
 
 /**
- * Durable login for the Notion tabs.
+ * Durable login for the chat tabs.
  *
- * Both webviews share one partition, so a single login covers both tabs (same
+ * All webviews share one partition, so a single login covers every tab (same
  * account, as intended). Chromium keeps `persist:` partitions on disk under
  * userData, but it only flushes the cookie store lazily - a hard kill can lose
  * a fresh login. So we flush explicitly: on an interval, on navigation, and on
  * quit. Nothing here ever reads or exports the cookie values themselves.
  */
 
-const PARTITION = 'persist:notion';
-const AUTH_COOKIES = ['token_v2', 'p_sync_session', 'notion_user_id'];
+const PARTITION = SITE.partition;
+const AUTH_COOKIES = SITE.authCookies;
 
 let ses = null;
 let flushTimer = null;
@@ -35,6 +36,16 @@ function get() {
   return ses;
 }
 
+/**
+ * True for a cookie belonging to the site or any of its subdomains. The
+ * leading dot Chromium writes on shared-host cookies has to come off first,
+ * and an exact/dot-suffix test keeps a lookalike domain out of the count.
+ */
+function onSite(domain) {
+  const host = (domain || '').replace(/^\./, '').toLowerCase();
+  return SITE.cookieDomains.some((d) => host === d || host.endsWith('.' + d));
+}
+
 async function flush() {
   try {
     await get().cookies.flushStore();
@@ -51,10 +62,10 @@ async function flush() {
 async function status() {
   const s = get();
   // Electron's `domain` filter does not match a leading-dot domain, and the
-  // auth cookies are spread across notion.com / app.notion.com. Fetch the whole
-  // store and filter by suffix instead - correctness beats cleverness here.
+  // auth cookies are spread across several hosts of the site. Fetch the whole
+  // store and match ourselves instead - correctness beats cleverness here.
   const everything = await s.cookies.get({}).catch(() => []);
-  const all = everything.filter((c) => (c.domain || '').replace(/^\./, '').endsWith('notion.com'));
+  const all = everything.filter((c) => onSite(c.domain));
   const found = {};
   for (const name of AUTH_COOKIES) {
     const c = all.find((x) => x.name === name);
@@ -65,7 +76,7 @@ async function status() {
     }
   }
   return {
-    loggedIn: Boolean(found.token_v2),
+    loggedIn: Boolean(found[SITE.primaryAuthCookie]),
     cookies: found,
     total: all.length,
     profileDir: app.getPath('userData'),
@@ -85,7 +96,8 @@ async function clear() {
 function watch() {
   const s = get();
 
-  // Notion refuses to render in a frame unless we drop the framing headers.
+  // The site refuses to render in a frame unless we drop the framing headers:
+  // it sends both X-Frame-Options and a CSP frame-ancestors directive.
   s.webRequest.onHeadersReceived((details, cb) => {
     const headers = { ...details.responseHeaders };
     for (const k of Object.keys(headers)) {

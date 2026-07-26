@@ -1,6 +1,6 @@
-# notioned
+# buildgpt
 
-Four Notion AI tabs orchestrated into a build system that ships real, running
+Four ChatGPT tabs orchestrated into a build system that ships real, running
 projects. You type one request in the sidebar; the agents do everything else.
 
 ```
@@ -27,9 +27,11 @@ npm install
 npm start
 ```
 
-Log into Notion **once, in tab A** — all four tabs share the persistent
-`persist:notion` session (profile in `./.profile/`, git-ignored, flushed
-aggressively so a hard kill never loses the login).
+Log into ChatGPT **once, in tab A** — all four tabs share the persistent
+`persist:chatgpt` session (profile in `./.profile/`, git-ignored, flushed
+aggressively so a hard kill never loses the login). A packaged build keeps that
+same `.profile/` folder next to the executable, so the whole thing stays
+portable: copy the folder, keep your login.
 
 ## Using it
 
@@ -47,7 +49,7 @@ aggressively so a hard kill never loses the login).
 There are no file caps or retry knobs - the planner and auditor decide when the
 project is done (with a runaway backstop).
 
-**Autopilot** watches tab A's chat: type a request directly into Notion and the
+**Autopilot** watches tab A's chat: type a request directly into ChatGPT and the
 system takes over, builds, then reports back into the same chat.
 
 **Terminal**: human-typed commands run in the current project folder
@@ -56,16 +58,18 @@ system takes over, builds, then reports back into the same chat.
 
 ## Self-healing details (learned from live runs)
 
-- **Chat rotation**: Notion virtualizes long transcripts, which blinds reply
-  detection. Tabs rotate to a fresh chat past ~12KB and reseed automatically.
-- **Send path**: Notion's real send button, with a keyboard fallback; typing
+- **Chat rotation**: ChatGPT virtualizes long threads, which blinds reply
+  detection. Tabs rotate to a fresh chat past ~12KB and reseed automatically; a
+  tab that goes fully blind gets a hard reset.
+- **Send path**: ChatGPT's real send button, with a keyboard fallback; typing
   goes through `webContents.insertText` so it works while the window is
   unfocused.
 - **Reply detection**: transcript-growth with echo skipping and status-line
-  filtering (`Crafting`, `Writing file`, …) — no Notion class names anywhere.
+  filtering (`Thinking`, `Searching the web`, …) — no ChatGPT class names
+  anywhere.
 - **Advanced menu** (header): Self-test (checks the live DOM without sending
-  anything), element pickers (click to re-teach a selector if Notion redesigns),
-  Forget login.
+  anything), element pickers (click to re-teach a selector if ChatGPT
+  redesigns), Forget login.
 
 ## MCP
 
@@ -77,7 +81,7 @@ Exposes `workspace_list` / `workspace_read` / `workspace_write` over stdio, so
 Claude Code or any MCP client can read and write the same workspace:
 
 ```bash
-claude mcp add notioned -- node ./src/mcp/server.js
+claude mcp add buildgpt -- node ./src/mcp/server.js
 ```
 
 ## Safety

@@ -1,16 +1,19 @@
 'use strict';
 /*
- * Orchestrator. Drives 4 Notion tabs (planner / builder / reviewer / auditor)
+ * Orchestrator. Drives 4 chat tabs (planner / builder / reviewer / auditor)
  * through one loop that writes a real project into workspace/<project>/, then
  * builds it, runs it, screenshots it and shows the result in the preview view.
  *
  * You touch exactly one control: the request box in the sidebar. Role contracts
  * are installed into each tab automatically, and every message between tabs is
- * relayed by this file - nothing is ever typed into a Notion chat by hand.
+ * relayed by this file - nothing is ever typed into a chat by hand.
+ *
+ * Everything site-specific (name, URL, auth cookie, login hint) comes off
+ * `site`, so this file never names the chat product it is driving.
  */
 
-const { protocol, fs, session, tabs, tool, term, shell, preloadPath, partition } =
-  window.notioned;
+const { protocol, fs, session, tabs, tool, term, shell, preloadPath, partition, site } =
+  window.buildgpt;
 
 const els = {
   a: document.getElementById('tab-a'),
@@ -51,7 +54,7 @@ const QA = ROLES.auditor;
 const RETRIES = 4; // per-file build attempts
 const FILE_BACKSTOP = 200; // runaway guard; the planner/auditor decide "done"
 
-// The preview webview gets NO preload/partition - only the Notion tabs do.
+// The preview webview gets NO preload/partition - only the agent tabs do.
 for (const tag of TAGS_ALL) {
   wvOf(tag).setAttribute('preload', preloadPath);
   wvOf(tag).setAttribute('partition', partition);
@@ -191,7 +194,7 @@ function drive(wv, cmd, args = {}, timeoutMs = 200000) {
   });
 }
 
-/** Letters and digits only — survives Notion's markdown auto-formatting. */
+/** Letters and digits only — survives the composer's markdown auto-formatting. */
 const normalizeForCompare = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 /**
@@ -199,7 +202,8 @@ const normalizeForCompare = (s) => String(s || '').toLowerCase().replace(/[^a-z0
  *
  * Typing goes through the main process (webContents.insertText) rather than
  * synthetic DOM events, so it works even when the window is in the background.
- * Sending prefers Notion's own button and falls back to a real Enter key event.
+ * Sending prefers the site's own send button and falls back to a real Enter key
+ * event.
  */
 async function ask(wv, text, opts) {
   const id = wv.getWebContentsId();
@@ -210,7 +214,7 @@ async function ask(wv, text, opts) {
   // Confirm the text actually landed before sending - otherwise we would send
   // an empty prompt and then wait three minutes for a reply that never comes.
   //
-  // Notion auto-formats markdown as you type, so the composer's text is not
+  // The composer auto-formats markdown as you type, so its text is not
   // byte-identical to what we sent (backticks, #, - and _ all get rewritten).
   // Compare on letters and digits only.
   const want = normalizeForCompare(text).slice(0, 30);
@@ -223,7 +227,7 @@ async function ask(wv, text, opts) {
     return null;
   };
 
-  // The composer is briefly non-interactive while Notion is still rendering a
+  // The composer is briefly non-interactive while the chat is still rendering a
   // previous answer, so one clean retry is worth more than failing the run.
   let landed = await settled();
   if (!landed) {
@@ -246,7 +250,7 @@ async function ask(wv, text, opts) {
 /* ------------------------------------------------------------- the loop */
 
 /**
- * Notion virtualizes long transcripts - old messages unmount as new ones
+ * Chat UIs virtualize long transcripts - old messages unmount as new ones
  * stream - which blinds the growth-based reply detector. Live symptom: after
  * one 13KB code reply, every later awaitReply on that tab timed out. So when a
  * tab's transcript passes this size, rotate it to a fresh chat and reseed.
@@ -283,7 +287,7 @@ async function rotateIfBloated(tag) {
   }
 }
 
-/** Point the tab at a brand-new Notion AI chat. The reliable last resort. */
+/** Point the tab at a brand-new chat. The reliable last resort. */
 function hardResetTab(tag) {
   const wv = wvOf(tag);
   return new Promise((resolve) => {
@@ -295,7 +299,7 @@ function hardResetTab(tag) {
     };
     const timer = setTimeout(done, 25000);
     wv.addEventListener('did-stop-loading', done);
-    wv.src = 'https://app.notion.com/ai';
+    wv.src = site.url;
   });
 }
 
@@ -313,8 +317,8 @@ async function askRole(tag, prompt, opts) {
 /**
  * Seed each tab with its role contract, automatically.
  *
- * You never type into a Notion chat yourself - the single input in the sidebar
- * is the only thing you touch. Seeding happens once per tab per app session,
+ * You never type into a chat yourself - the single input in the sidebar is the
+ * only thing you touch. Seeding happens once per tab per app session,
  * but the contracts are mode-aware: switching mode reseeds all four tabs.
  */
 const seeded = new Set();
@@ -336,7 +340,7 @@ async function seedTab(tag) {
       // whole run, and rotation clears every known cause of unreadable replies.
       log(`${tag.toUpperCase()} seed failed (${e.message}) — hard reset and retry`, 'err');
       // A soft new-chat retry types into the same dead composer; go straight
-      // to the reliable path: reload the tab onto a fresh /ai chat.
+      // to the reliable path: reload the tab onto a fresh chat.
       await hardResetTab(tag);
       await ask(wvOf(tag), contract + '\n\nReply with exactly: READY');
     }
@@ -431,9 +435,9 @@ async function buildFile(project, filePath, request, mode) {
 /**
  * Ask the planner something that must come back as a path.
  *
- * Notion AI sometimes drops into an agent mode and answers with tool chatter
- * instead of obeying the one-line contract. Re-asking with an explicit nudge
- * recovers it, which is cheaper than failing the whole run.
+ * The model sometimes drops into an agent/tool mode and answers with tool
+ * chatter instead of obeying the one-line contract. Re-asking with an explicit
+ * nudge recovers it, which is cheaper than failing the whole run.
  */
 async function askForPath(prompt) {
   const tag = ROLES.planner;
@@ -748,6 +752,35 @@ async function verifyByRunning(project, request, mode) {
   return { ok: pass, stage: 'run', url: null, detail };
 }
 
+/**
+ * How long to watch the composer for a pasted image to appear, and the blind
+ * wait to fall back on when nothing observable changes.
+ */
+const PASTE_WATCH_MS = 6000;
+const PASTE_BLIND_MS = 2500;
+
+/**
+ * Wait for a pasted screenshot to actually attach.
+ *
+ * The attachment chip renders inside the composer, so composerText changes the
+ * moment the upload lands - watching for that is both faster than a fixed sleep
+ * when the site is quick and safer when it is slow. If nothing changes (some
+ * composers render the chip outside the text node we read), fall back to the
+ * blind wait that this replaced rather than typing over a half-done upload.
+ */
+async function waitForPastedImage(wv, before) {
+  const deadline = Date.now() + PASTE_WATCH_MS;
+  while (Date.now() < deadline) {
+    const now = await drive(wv, 'composerText', {}, 8000).catch(() => null);
+    if (now !== null && (now || '') !== before) {
+      await new Promise((r) => setTimeout(r, 600)); // let the upload settle
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
 /** Send a prompt plus the clipboard image to a tab. */
 async function askWithImage(tag, text) {
   const wv = wvOf(tag);
@@ -755,8 +788,13 @@ async function askWithImage(tag, text) {
   markBusy(tag, true);
   try {
     await drive(wv, 'prepare', {}, 15000);
+    // An unreadable baseline must not look like "the image arrived", so a
+    // failed read counts as an empty composer.
+    const before = (await drive(wv, 'composerText', {}, 8000).catch(() => '')) || '';
     await tabs.paste(id);                       // the screenshot
-    await new Promise((r) => setTimeout(r, 2500)); // let Notion upload it
+    if (!(await waitForPastedImage(wv, before))) {
+      await new Promise((r) => setTimeout(r, PASTE_BLIND_MS));
+    }
     await tabs.type(id, text);
     await new Promise((r) => setTimeout(r, 500));
     const clicked = await drive(wv, 'clickSend', {}, 8000);
@@ -813,17 +851,17 @@ els.stop.addEventListener('click', () => { abort = true; log('stop requested'); 
 const modelSelect = (tag) => document.getElementById('model-' + tag);
 
 /**
- * Fill a tab's model dropdown from Notion's own model menu.
+ * Fill a tab's model dropdown from the site's own model menu.
  *
- * Notion's composer toolbar mounts well after the page reports ready, so a
- * single attempt on load finds nothing and the dropdown sits empty. Retry with
- * backoff until the menu exists.
+ * The composer toolbar mounts well after the page reports ready, so a single
+ * attempt on load finds nothing and the dropdown sits empty. Retry with backoff
+ * until the menu exists.
  */
 async function loadModels(tag, { attempts = 1, quiet = false } = {}) {
   const wv = wvOf(tag);
   const sel = modelSelect(tag);
   if (!sel) return;
-  // Opening Notion's model dropdown while a run is typing into the same
+  // Opening the site's model dropdown while a run is typing into the same
   // composer corrupts both; model loading waits until the loop is idle.
   if (running) {
     if (!quiet) log(`${tag.toUpperCase()}: busy with a run — reload models later`, 'err');
@@ -881,7 +919,7 @@ for (const tag of TAGS_ALL) {
 /**
  * Auto-populate once each tab has rendered its composer.
  *
- * Serialised: reading the list means opening Notion's dropdown and closing it
+ * Serialised: reading the list means opening the site's dropdown and closing it
  * again, and four tabs doing that at once interfere with each other - two of
  * them came back empty every time until this was a queue.
  */
@@ -947,12 +985,12 @@ els.selftest.addEventListener('click', async () => {
       const r = await drive(wv, 'selftest', {}, 30000);
       const checks = [...r.checks];
 
-      // Typing and the send button can only be verified together: Notion does
+      // Typing and the send button can only be verified together: the site does
       // not render a send control until the composer has content. Type a
       // marker through the real input path, inspect, then clear without sending.
-      // No markdown-trigger characters: Notion would rewrite them mid-typing
-      // and the composer would end up empty, which also hides the send button.
-      const marker = 'notioned selftest ping';
+      // No markdown-trigger characters: the composer would rewrite them
+      // mid-typing and end up empty, which also hides the send button.
+      const marker = `${site.brand} selftest ping`;
       try {
         await drive(wv, 'prepare', {}, 15000);
         await tabs.type(wv.getWebContentsId(), marker);
@@ -1001,7 +1039,7 @@ document.querySelectorAll('[data-pick]').forEach((btn) => {
 /* ----------------------------------------------------------- autopilot */
 
 /**
- * Hands-off mode. You type ONE message into tab A's Notion chat yourself; the
+ * Hands-off mode. You type ONE message into tab A's chat yourself; the
  * system notices it, runs the whole planner/builder/review loop to completion,
  * and then posts a summary back into that same chat so you learn it is done
  * without watching the app. It builds in whatever mode the sidebar is set to.
@@ -1116,7 +1154,7 @@ els.autopilot.addEventListener('click', async () => {
   els.autopilot.textContent = autopilot ? 'Autopilot: ON' : 'Autopilot';
   if (autopilot) {
     watchBaseline = await tabTranscript(els.a).catch(() => null);
-    log('autopilot ON — type your request into tab A\'s Notion chat, once.', 'ok');
+    log(`autopilot ON — type your request into tab A's ${site.name} chat, once.`, 'ok');
     log('the system will plan, build, review, write files, then reply in chat.', 'ok');
   } else {
     log('autopilot OFF');
@@ -1133,8 +1171,8 @@ async function refreshLogin() {
   const s = await session.status();
   els.session.className = 'pill ' + (s.loggedIn ? 'in' : 'out');
   els.session.textContent = s.loggedIn
-    ? `session saved · token_v2 → ${s.cookies.token_v2}`
-    : 'not logged in — log in on tab A';
+    ? `session saved · ${site.primaryAuthCookie} → ${s.cookies?.[site.primaryAuthCookie] ?? 'set'}`
+    : `not logged in — ${site.loginHint}`;
   els.session.title = `profile: ${s.profileDir}\ncookies: ${s.total}`;
 
   if (wasLoggedIn === false && s.loggedIn) {
@@ -1173,4 +1211,4 @@ refreshLogin().catch(() => {});
 
 setView('agents');
 refreshFiles().catch(() => {});
-log('ready. log into Notion in tab A — the other tabs share the session.');
+log(`ready. ${site.loginHint} — the other tabs share the session.`);

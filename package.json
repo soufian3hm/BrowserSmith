@@ -1,7 +1,7 @@
 {
-  "name": "notioned",
+  "name": "buildgpt",
   "version": "0.1.0",
-  "description": "Two-tab Notion AI agent loop that writes real files",
+  "description": "Four-tab ChatGPT agent loop that plans, writes, reviews and audits real projects, then runs them",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
