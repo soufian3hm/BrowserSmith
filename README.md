@@ -15,14 +15,16 @@
   <a href="https://github.com/soufian3hm/BrowserSmith/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/soufian3hm/BrowserSmith?style=flat"></a>
 </p>
 
-<!--
-  TODO (maintainer): record docs/demo.gif — 20-30s, no cuts: type one sentence
-  into the sidebar, the four tabs light up in sequence (plan, build, review,
-  audit), the terminal streams npm install, the Preview tab shows the finished
-  app running. Then delete this comment and uncomment the line below.
+<p align="center">
+  <img src="docs/demo.gif" width="880"
+       alt="Four ChatGPT tabs plan, write, review and audit a lava lamp app, which then runs in the Preview tab">
+</p>
 
-<p align="center"><img src="docs/demo.gif" alt="BrowserSmith building and running an app from one sentence" width="880"></p>
--->
+<p align="center">
+  <sub>One real run, start to finish: <b>&ldquo;build me a lava lamp&rdquo;</b> &rarr; four tabs plan, write,
+  review and audit it &rarr; the app runs in the Preview tab.<br>
+  The writing is sped up. The preview at the end is not.</sub>
+</p>
 
 BrowserSmith is an Electron app that drives four ChatGPT tabs as a build team.
 One tab plans the next file, one writes it, one approves or rejects it, one
